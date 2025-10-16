@@ -1,0 +1,21 @@
+<resources>
+
+    <!-- Base application theme -->
+    <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Background image for EditText -->
+        <item name="android:editTextBackground">@drawable/screen</item>
+
+        <!-- Status bar color to transparent (modern approach) -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+
+        <!-- Navigation bar color -->
+        <item name="android:navigationBarColor">@android:color/black</item>
+
+        <!-- Make sure content is not behind status bar -->
+        <item name="android:windowTranslucentStatus">false</item>
+
+        <!-- Dark icons on light status bar -->
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+</resources>
