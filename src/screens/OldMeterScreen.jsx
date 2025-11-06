@@ -61,6 +61,10 @@ const OldMeterScreen = ({ navigation, route }) => {
       previousReadingDate: "",
     }
 
+    if (!initialData.account_id) {
+      initialData.account_id = route.params?.customerData?.account_id || customerData?.account_id
+    }
+
     // If in edit mode, use existing old meter data
     if (editMode && existingOldMeterData) {
       initialData = {
@@ -82,6 +86,7 @@ const OldMeterScreen = ({ navigation, route }) => {
         meterCategory: cachedOldMeterData.meterCategory || "",
         previousReading: cachedOldMeterData.previousReading || "",
         previousReadingDate: cachedOldMeterData.previousReadingDate || "",
+        account_id: cachedOldMeterData.account_id || customerData?.account_id, // Ensure account_id is retained
       }
     }
 
@@ -100,14 +105,474 @@ const OldMeterScreen = ({ navigation, route }) => {
   const [lastCategorySent, setLastCategorySent] = useState(null)
   const [showDebugInfo, setShowDebugInfo] = useState(__DEV__)
   const [serverInstanceCreated, setServerInstanceCreated] = useState(false)
-const isValidUrl = (url) => {
-  try {
-    new URL(url);
-    return true;
-  } catch (e) {
-    return false;
+  const [imageValidationErrors, setImageValidationErrors] = useState({
+    photo1: null,
+    photo2: null,
+  })
+  const [imageInfo, setImageInfo] = useState({
+    photo1: null,
+    photo2: null,
+  })
+  const [validationDetails, setValidationDetails] = useState([])
+
+  // ADD THE MISSING FUNCTION HERE
+  const getCurrentMeterCategory = async () => {
+    // First check state
+    if (meterData.meterCategory) {
+      console.log("Using meter category from state:", meterData.meterCategory)
+      return meterData.meterCategory
+    }
+
+    try {
+      // Check AsyncStorage
+      const savedCategory = await AsyncStorage.getItem("selectedMeterCategory")
+      if (savedCategory) {
+        console.log("Using meter category from AsyncStorage:", savedCategory)
+        return savedCategory
+      }
+    } catch (error) {
+      console.error("Error getting meter category from AsyncStorage:", error)
+    }
+
+    try {
+      // Check oldMeterData in AsyncStorage
+      const savedData = await AsyncStorage.getItem("oldMeterData")
+      if (savedData) {
+        const parsedData = JSON.parse(savedData)
+        if (parsedData.meterCategory) {
+          console.log("Using meter category from oldMeterData:", parsedData.meterCategory)
+          return parsedData.meterCategory
+        }
+      }
+    } catch (error) {
+      console.error("Error getting meter category from oldMeterData:", error)
+    }
+
+    console.log("Could not find meter category from any source")
+    return null
   }
-};
+
+  // Function to get image information
+  const getImageInfo = async (uri, photoKey) => {
+    if (!uri) return null
+
+    try {
+      const isRemoteUrl = uri.startsWith("http://") || uri.startsWith("https://")
+
+      if (isRemoteUrl) {
+        // For remote URLs, we can't use RNFS, so extract info from the URL
+        console.log(`[v0] Processing remote URL for ${photoKey}:`, uri)
+
+        const uriParts = uri.split(".")
+        const extension = uriParts.length > 1 ? uriParts[uriParts.length - 1].toLowerCase().split("?")[0] : "unknown"
+
+        // Determine mime type
+        let mimeType = "unknown"
+        if (extension === "jpg" || extension === "jpeg") mimeType = "image/jpeg"
+        else if (extension === "png") mimeType = "image/png"
+        else if (extension === "gif") mimeType = "image/gif"
+        else if (extension === "webp") mimeType = "image/webp"
+
+        const info = {
+          exists: true,
+          uri: uri,
+          size: null, // Remote URLs don't have accessible size info
+          sizeKB: null,
+          sizeMB: null,
+          extension: extension,
+          mimeType: mimeType,
+          filename: uri.split("/").pop().split("?")[0],
+          path: uri,
+          lastModified: "unknown",
+          isUnder2MB: null, // Cannot determine for remote URLs
+          isLocalFile: false,
+          isRemoteUrl: true,
+          isFromServer: true, // Assuming remote URLs are from the server
+        }
+
+        console.log(`[v0] Remote URL info for ${photoKey}:`, info)
+
+        setImageInfo((prev) => ({
+          ...prev,
+          [photoKey]: info,
+        }))
+
+        return info
+      } else {
+        // Original logic for local files
+        const fileExists = await RNFS.exists(uri)
+        if (!fileExists) {
+          console.log(`[v0] Local file does not exist for ${photoKey}:`, uri)
+          return {
+            exists: false,
+            uri: uri,
+            error: "File does not exist",
+          }
+        }
+
+        const fileStats = await RNFS.stat(uri)
+        const sizeKB = fileStats.size / 1024
+        const sizeMB = fileStats.size / (1024 * 1024)
+
+        // Get file extension
+        const uriParts = uri.split(".")
+        const extension = uriParts.length > 1 ? uriParts[uriParts.length - 1].toLowerCase() : "unknown"
+
+        // Determine mime type
+        let mimeType = "unknown"
+        if (extension === "jpg" || extension === "jpeg") mimeType = "image/jpeg"
+        else if (extension === "png") mimeType = "image/png"
+        else if (extension === "gif") mimeType = "image/gif"
+        else if (extension === "webp") mimeType = "image/webp"
+
+        const info = {
+          exists: true,
+          uri: uri,
+          size: fileStats.size,
+          sizeKB: Math.round(sizeKB * 100) / 100,
+          sizeMB: Math.round(sizeMB * 100) / 100,
+          extension: extension,
+          mimeType: mimeType,
+          filename: uri.split("/").pop(),
+          path: uri,
+          lastModified: fileStats.mtime ? new Date(fileStats.mtime).toISOString() : "unknown",
+          isUnder2MB: sizeMB <= 2,
+          isLocalFile: uri.startsWith("file://") || !uri.startsWith("http"),
+          isRemoteUrl: false,
+        }
+
+        console.log(`[v0] Local file info for ${photoKey}:`, info)
+
+        setImageInfo((prev) => ({
+          ...prev,
+          [photoKey]: info,
+        }))
+
+        return info
+      }
+    } catch (error) {
+      console.error(`[v0] Error getting image info for ${photoKey}:`, error)
+      const errorInfo = {
+        exists: false,
+        uri: uri,
+        error: error.message,
+      }
+      setImageInfo((prev) => ({
+        ...prev,
+        [photoKey]: errorInfo,
+      }))
+      return errorInfo
+    }
+  }
+
+  const isValidUrl = (url) => {
+    try {
+      new URL(url)
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+
+  // Enhanced validation functions with detailed messages
+  const validateSerialNumber = (serialNumber, meterCategory) => {
+    // For DC category, NO VALIDATION - allow any value including special characters and "NA"
+    if (meterCategory === "DC") {
+      return null
+    }
+
+    if (!serialNumber || serialNumber.trim() === "") {
+      return "Serial number is required"
+    }
+
+    // Check for special characters (only alphanumeric allowed for non-DC)
+    const alphanumericRegex = /^[a-zA-Z0-9]*$/
+    if (!alphanumericRegex.test(serialNumber)) {
+      return "Only alphanumeric characters are allowed in serial number"
+    }
+
+    // Check length (max 10 characters)
+    if (serialNumber.length > 10) {
+      return "Serial number cannot exceed 10 characters"
+    }
+
+    // Check for only zeros
+    if (/^0+$/.test(serialNumber)) {
+      return "Please enter a valid serial number (cannot be all zeros)"
+    }
+
+    return null
+  }
+
+  const validateManufactureYear = (year, meterCategory) => {
+    // For DC category, NO VALIDATION - allow "0" and any other value
+    if (meterCategory === "DC") {
+      return null
+    }
+
+    if (!year || year.trim() === "") {
+      return "Manufacture year is required"
+    }
+
+    // Check for negative numbers
+    if (year.startsWith("-")) {
+      return "Negative numbers are not allowed for manufacture year"
+    }
+
+    // Check if it's a valid number
+    const yearNum = Number.parseInt(year)
+    if (isNaN(yearNum)) {
+      return "Manufacture year must be a valid number"
+    }
+
+    // Check year range (reasonable range for meter manufacture)
+    const currentYear = new Date().getFullYear()
+    if (yearNum < 1900 || yearNum > currentYear) {
+      return `Manufacture year must be between 1900 and ${currentYear}`
+    }
+
+    // Check length (exactly 4 digits for non-DC)
+    if (year.length !== 4) {
+      return "Manufacture year must be exactly 4 digits"
+    }
+
+    return null
+  }
+
+  const validateFinalReading = (reading, meterCategory) => {
+    if (meterCategory === "DC" || meterCategory === "MNR" || meterCategory === "RNV") {
+      return null
+    }
+
+    if (reading === "" || reading === null) {
+      return "Final reading is required"
+    }
+
+    // Check for negative numbers
+    if (reading.startsWith("-")) {
+      return "Final reading must be a positive number"
+    }
+
+    const numReading = Number.parseFloat(reading)
+
+    if (isNaN(numReading)) {
+      return "Final reading must be a valid number"
+    }
+
+    // Ensure it's positive
+    if (numReading < 0) {
+      return "Final reading must be a positive number"
+    }
+
+    if (numReading === 0 && meterCategory === "Electromechanical") {
+      return "Final reading cannot be zero for Electromechanical meters"
+    }
+
+    return null
+  }
+
+  const validateMeterMake = (meterMake, meterCategory) => {
+    // For DC category, "NA" is allowed, no other validation
+    if (meterCategory === "DC") {
+      return null
+    }
+
+    if (!meterMake || meterMake.trim() === "") {
+      return "Meter make is required"
+    }
+    return null
+  }
+
+  const validateMeterCategory = (category) => {
+    if (!category || category.trim() === "") {
+      return "Meter category is required"
+    }
+    return null
+  }
+
+  const validatePhotos = () => {
+    const photoErrors = {}
+    if (!meterData.photo1) {
+      photoErrors.photo1 = "Photo 1 is required - please take a photo of the meter with readings displayed"
+    }
+    if (!meterData.photo2) {
+      photoErrors.photo2 = "Photo 2 is required - please take a photo of the meter with readings displayed"
+    }
+    return photoErrors
+  }
+
+  // Enhanced validation function that returns detailed information
+  const validateAllFields = () => {
+    const validationErrors = {}
+    const validationDetails = []
+
+    // Validate meter category
+    const categoryError = validateMeterCategory(meterData.meterCategory)
+    if (categoryError) {
+      validationErrors.meterCategory = categoryError
+      validationDetails.push({
+        field: "Meter Category",
+        value: meterData.meterCategory || "Not selected",
+        error: categoryError,
+        status: "❌",
+      })
+    } else {
+      validationDetails.push({
+        field: "Meter Category",
+        value: meterData.meterCategory,
+        error: null,
+        status: "✅",
+      })
+    }
+
+    // Validate photos
+    const photoErrors = validatePhotos()
+    Object.assign(validationErrors, photoErrors)
+
+    // Photo 1 validation details
+    if (photoErrors.photo1) {
+      validationDetails.push({
+        field: "Photo 1",
+        value: meterData.photo1 ? "Image captured" : "No image",
+        error: photoErrors.photo1,
+        status: "❌",
+      })
+    } else {
+      validationDetails.push({
+        field: "Photo 1",
+        value: meterData.photo1 ? "Image captured" : "No image",
+        error: null,
+        status: "✅",
+      })
+    }
+
+    // Photo 2 validation details
+    if (photoErrors.photo2) {
+      validationDetails.push({
+        field: "Photo 2",
+        value: meterData.photo2 ? "Image captured" : "No image",
+        error: photoErrors.photo2,
+        status: "❌",
+      })
+    } else {
+      validationDetails.push({
+        field: "Photo 2",
+        value: meterData.photo2 ? "Image captured" : "No image",
+        error: null,
+        status: "✅",
+      })
+    }
+
+    // For DC category, SKIP validation for other fields
+    if (meterData.meterCategory !== "DC") {
+      // Validate meter make
+      const meterMakeError = validateMeterMake(meterData.meterMake, meterData.meterCategory)
+      if (meterMakeError) {
+        validationErrors.meterMake = meterMakeError
+        validationDetails.push({
+          field: "Meter Make",
+          value: meterData.meterMake || "Not selected",
+          error: meterMakeError,
+          status: "❌",
+        })
+      } else {
+        validationDetails.push({
+          field: "Meter Make",
+          value: meterData.meterMake || "Not selected",
+          error: null,
+          status: "✅",
+        })
+      }
+
+      // Validate serial number
+      const serialNumberError = validateSerialNumber(meterData.serialNumber, meterData.meterCategory)
+      if (serialNumberError) {
+        validationErrors.serialNumber = serialNumberError
+        validationDetails.push({
+          field: "Serial Number",
+          value: meterData.serialNumber || "Empty",
+          error: serialNumberError,
+          status: "❌",
+        })
+      } else {
+        validationDetails.push({
+          field: "Serial Number",
+          value: meterData.serialNumber || "Empty",
+          error: null,
+          status: "✅",
+        })
+      }
+
+      // Validate manufacture year
+      const manufactureYearError = validateManufactureYear(meterData.manufactureYear, meterData.meterCategory)
+      if (manufactureYearError) {
+        validationErrors.manufactureYear = manufactureYearError
+        validationDetails.push({
+          field: "Manufacture Year",
+          value: meterData.manufactureYear || "Empty",
+          error: manufactureYearError,
+          status: "❌",
+        })
+      } else {
+        validationDetails.push({
+          field: "Manufacture Year",
+          value: meterData.manufactureYear || "Empty",
+          error: null,
+          status: "✅",
+        })
+      }
+
+      // Validate final reading
+      const finalReadingError = validateFinalReading(meterData.finalReading, meterData.meterCategory)
+      if (finalReadingError) {
+        validationErrors.finalReading = finalReadingError
+        validationDetails.push({
+          field: "Final Reading",
+          value: meterData.finalReading || "Empty",
+          error: finalReadingError,
+          status: "❌",
+        })
+      } else {
+        validationDetails.push({
+          field: "Final Reading",
+          value: meterData.finalReading || "Empty",
+          error: null,
+          status: "✅",
+        })
+      }
+    } else {
+      // For DC category, show auto-populated values as valid
+      validationDetails.push(
+        {
+          field: "Meter Make",
+          value: meterData.meterMake || "Auto-populated for DC",
+          error: null,
+          status: "✅",
+        },
+        {
+          field: "Serial Number",
+          value: meterData.serialNumber || "Auto-populated for DC",
+          error: null,
+          status: "✅",
+        },
+        {
+          field: "Manufacture Year",
+          value: meterData.manufactureYear || "Auto-populated for DC",
+          error: null,
+          status: "✅",
+        },
+        {
+          field: "Final Reading",
+          value: meterData.finalReading || "Auto-populated for DC",
+          error: null,
+          status: "✅",
+        },
+      )
+    }
+
+    return { validationErrors, validationDetails }
+  }
+
   // Function to save data to cache database whenever it changes
   const saveToCache = async (data) => {
     try {
@@ -125,92 +590,121 @@ const isValidUrl = (url) => {
   }
 
   useEffect(() => {
-   const keyboardDidShowListener = Keyboard.addListener("keyboardDidShow", () => {
-    setKeyboardVisible(true)
-  })
-  const keyboardDidHideListener = Keyboard.addListener("keyboardDidHide", () => {
-    setKeyboardVisible(false)
-  })
+    const keyboardDidShowListener = Keyboard.addListener("keyboardDidShow", () => {
+      setKeyboardVisible(true)
+    })
+    const keyboardDidHideListener = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardVisible(false)
+    })
 
-  // Initialize data loading
-  const initializeData = async () => {
-    if (editMode && existingOldMeterData) {
-      // Edit mode: use existing old meter data
-      const updatedData = {
-        ...meterData,
-        ...existingOldMeterData,
-      }
-      setMeterData(updatedData)
-      await saveToCache(updatedData)
-    } else if (cachedOldMeterData) {
-      // Auto-populate mode: use cached data
-      console.log("Auto-populating with cached old meter data")
-      
-      // Check if we have image URLs that need the domain prefix
-      const formatImageUrl = (url) => {
-        if (!url) return null;
-        // If it's already a full URL, return as is
-        if (url.startsWith('http')) return url;
-        // If it's a path only, add the domain
-        if (url.startsWith('uploads/')) {
-          return `https://gescom.vishvin.com/${url}`;
-        }
-        return url;
-      };
-      
-      const updatedData = {
-        ...meterData,
-        photo1: formatImageUrl(cachedOldMeterData.photo1),
-        photo2: formatImageUrl(cachedOldMeterData.photo2),
-        meterMake: cachedOldMeterData.meterMake || "",
-        serialNumber: cachedOldMeterData.serialNumber || "",
-        manufactureYear: cachedOldMeterData.manufactureYear || "",
-        finalReading: cachedOldMeterData.finalReading || "",
-        meterCategory: cachedOldMeterData.meterCategory || "",
-        previousReading: cachedOldMeterData.previousReading || "",
-        previousReadingDate: cachedOldMeterData.previousReadingDate || "",
-      }
-      setMeterData(updatedData)
-      await saveToCache(updatedData)
-    } else if (customerData?.account_id) {
-      // Normal mode: try to load from cache first
-      const cachedData = await loadFromCache(customerData.account_id)
-      if (cachedData) {
-        console.log("Loading existing cached data for account:", customerData.account_id)
-        
-        // Check if we have image URLs that need the domain prefix
-        const formatImageUrl = (url) => {
-          if (!url) return null;
-          // If it's already a full URL, return as is
-          if (url.startsWith('http')) return url;
-          // If it's a path only, add the domain
-          if (url.startsWith('uploads/')) {
-            return `https://gescom.vishvin.com/${url}`;
-          }
-          return url;
-        };
-        
+    // Initialize data loading
+    const initializeData = async () => {
+      if (editMode && existingOldMeterData) {
+        // Edit mode: use existing old meter data
         const updatedData = {
           ...meterData,
-          photo1: formatImageUrl(cachedData.photo1),
-          photo2: formatImageUrl(cachedData.photo2),
-          meterMake: cachedData.meterMake || "",
-          serialNumber: cachedData.serialNumber || "",
-          manufactureYear: cachedData.manufactureYear || "",
-          finalReading: cachedData.finalReading || "",
-          meterCategory: cachedData.meterCategory || "",
-          previousReading: cachedData.previousReading || "",
-          previousReadingDate: cachedData.previousReadingDate || "",
+          ...existingOldMeterData,
         }
         setMeterData(updatedData)
-      } else {
-        // No cached data, save initial data
-        await saveToCache(meterData)
+        await saveToCache(updatedData)
+
+        // Get image info for existing images
+        if (updatedData.photo1) await getImageInfo(updatedData.photo1, "photo1")
+        if (updatedData.photo2) await getImageInfo(updatedData.photo2, "photo2")
+      } else if (cachedOldMeterData) {
+        // Auto-populate mode: use cached data
+        console.log("[v0] Auto-populating with cached old meter data")
+
+        const formatImageUrl = (url) => {
+          if (!url) return null
+          // If it's already a full URL, return as is
+          if (url.startsWith("http")) return url
+          // If it's a path only, add the domain
+          if (url.startsWith("uploads/")) {
+            return `https://gescom.vishvin.com/${url}`
+          }
+          return url
+        }
+
+        const photo1Formatted = formatImageUrl(cachedOldMeterData.photo1)
+        const photo2Formatted = formatImageUrl(cachedOldMeterData.photo2)
+
+        const updatedData = {
+          ...meterData,
+          photo1: photo1Formatted,
+          photo2: photo2Formatted,
+          meterMake: cachedOldMeterData.meterMake || "",
+          serialNumber: cachedOldMeterData.serialNumber || "",
+          manufactureYear: cachedOldMeterData.manufactureYear || "",
+          finalReading: cachedOldMeterData.finalReading || "",
+          meterCategory: cachedOldMeterData.meterCategory || "",
+          previousReading: cachedOldMeterData.previousReading || "",
+          previousReadingDate: cachedOldMeterData.previousReadingDate || "",
+        }
+
+        console.log("[v0] Updated meter data with formatted images:", {
+          photo1: photo1Formatted,
+          photo2: photo2Formatted,
+        })
+
+        setMeterData(updatedData)
+        await saveToCache(updatedData)
+
+        if (photo1Formatted) {
+          console.log("[v0] Getting image info for photo1:", photo1Formatted)
+          await getImageInfo(photo1Formatted, "photo1")
+        }
+        if (photo2Formatted) {
+          console.log("[v0] Getting image info for photo2:", photo2Formatted)
+          await getImageInfo(photo2Formatted, "photo2")
+        }
+
+        if (photo1Formatted || photo2Formatted) {
+          await validateDatabaseImages(photo1Formatted, photo2Formatted)
+        }
+      } else if (customerData?.account_id) {
+        // Normal mode: try to load from cache first
+        const cachedData = await loadFromCache(customerData.account_id)
+        if (cachedData) {
+          console.log("Loading existing cached data for account:", customerData.account_id)
+
+          // Check if we have image URLs that need the domain prefix
+          const formatImageUrl = (url) => {
+            if (!url) return null
+            // If it's already a full URL, return as is
+            if (url.startsWith("http")) return url
+            // If it's a path only, add the domain
+            if (url.startsWith("uploads/")) {
+              return `https://gescom.vishvin.com/${url}`
+            }
+            return url
+          }
+
+          const updatedData = {
+            ...meterData,
+            photo1: formatImageUrl(cachedData.photo1),
+            photo2: formatImageUrl(cachedData.photo2),
+            meterMake: cachedData.meterMake || "",
+            serialNumber: cachedData.serialNumber || "",
+            manufactureYear: cachedData.manufactureYear || "",
+            finalReading: cachedData.finalReading || "",
+            meterCategory: cachedData.meterCategory || "",
+            previousReading: cachedData.previousReading || "",
+            previousReadingDate: cachedData.previousReadingDate || "",
+          }
+          setMeterData(updatedData)
+
+          // Get image info for cached images
+          if (updatedData.photo1) await getImageInfo(updatedData.photo1, "photo1")
+          if (updatedData.photo2) await getImageInfo(updatedData.photo2, "photo2")
+        } else {
+          // No cached data, save initial data
+          await saveToCache(meterData)
+        }
       }
     }
-  }
 
-  initializeData()
+    initializeData()
 
     if (customerData && customerData.account_id) {
       console.log("Setting account_id in OldMeterScreen:", customerData.account_id)
@@ -398,6 +892,48 @@ const isValidUrl = (url) => {
     setMeterData(newData)
     await saveData(newData)
     await saveToCache(newData) // Save to cache database immediately
+
+    // If it's a photo, get image info
+    if (key === "photo1" || key === "photo2") {
+      if (value) {
+        await getImageInfo(value, key)
+      } else {
+        setImageInfo((prev) => ({
+          ...prev,
+          [key]: null,
+        }))
+      }
+    }
+  }
+
+  const handleSerialNumberChange = async (value) => {
+    // For DC category, allow any input including special characters
+    // For other categories, restrict to alphanumeric
+    let processedValue = value
+    if (meterData.meterCategory !== "DC") {
+      processedValue = value.replace(/[^a-zA-Z0-9]/g, "").substring(0, 10)
+    }
+
+    await handleInputChange("serialNumber", processedValue)
+
+    // Validate and set error - pass current category
+    const error = validateSerialNumber(processedValue, meterData.meterCategory)
+    setErrors((prev) => ({ ...prev, serialNumber: error }))
+  }
+
+  const handleManufactureYearChange = async (value) => {
+    // For DC category, allow any input including "0"
+    // For other categories, restrict to numbers only
+    let processedValue = value
+    if (meterData.meterCategory !== "DC") {
+      processedValue = value.replace(/[^0-9]/g, "").substring(0, 4)
+    }
+
+    await handleInputChange("manufactureYear", processedValue)
+
+    // Validate and set error - pass current category
+    const error = validateManufactureYear(processedValue, meterData.meterCategory)
+    setErrors((prev) => ({ ...prev, manufactureYear: error }))
   }
 
   const handleCategoryChange = async (category) => {
@@ -412,8 +948,8 @@ const isValidUrl = (url) => {
     if (category === "DC") {
       newData = {
         ...newData,
-        meterMake: "N/A",
-        serialNumber: "N/A",
+        meterMake: "NA",
+        serialNumber: "NA",
         manufactureYear: "0",
         finalReading: "0",
       }
@@ -432,7 +968,36 @@ const isValidUrl = (url) => {
 
     setMeterData(newData)
     await saveData(newData)
-    await saveToCache(newData) // Save to cache database immediately
+    await saveToCache(newData)
+
+    // Validate category
+    const categoryError = validateMeterCategory(category)
+
+    // For DC category, clear all field errors since validation is bypassed
+    if (category === "DC") {
+      setErrors({
+        meterCategory: categoryError,
+        // Clear all other errors for DC category
+        serialNumber: null,
+        manufactureYear: null,
+        finalReading: null,
+        meterMake: null,
+      })
+    } else {
+      // For other categories, validate all fields
+      const serialError = validateSerialNumber(newData.serialNumber, category)
+      const yearError = validateManufactureYear(newData.manufactureYear, category)
+      const readingError = validateFinalReading(newData.finalReading, category)
+      const makeError = validateMeterMake(newData.meterMake, category)
+
+      setErrors({
+        meterCategory: categoryError,
+        serialNumber: serialError,
+        manufactureYear: yearError,
+        finalReading: readingError,
+        meterMake: makeError,
+      })
+    }
 
     try {
       AsyncStorage.setItem("selectedMeterCategory", category)
@@ -445,6 +1010,10 @@ const isValidUrl = (url) => {
   const handleMeterMakeSelect = async (value) => {
     console.log("Meter make selected:", value)
     await handleInputChange("meterMake", value)
+
+    // Validate meter make - pass current category
+    const error = validateMeterMake(value, meterData.meterCategory)
+    setErrors((prev) => ({ ...prev, meterMake: error }))
   }
 
   const requestCameraPermission = async () => {
@@ -489,6 +1058,16 @@ const isValidUrl = (url) => {
       }
 
       setProcessingPhoto(photoKey)
+
+      // CHANGE: Clear validation errors for this photo immediately when starting to take photo
+      if (errors[photoKey]) {
+        setErrors((prevErrors) => {
+          const newErrors = { ...prevErrors }
+          delete newErrors[photoKey]
+          return newErrors
+        })
+      }
+
       const response = await launchCamera(options)
       console.log("Camera response:", response)
 
@@ -509,26 +1088,91 @@ const isValidUrl = (url) => {
         const capturedPhoto = response.assets[0]
         console.log("Captured photo URI:", capturedPhoto.uri)
 
+        // CHANGE: Double-check error clearing after getting the photo
+        if (errors[photoKey]) {
+          setErrors((prevErrors) => {
+            const newErrors = { ...prevErrors }
+            delete newErrors[photoKey]
+            return newErrors
+          })
+        }
+
         setCompressionProgress("Compressing image to ensure it meets size requirements...")
 
         try {
-          const compressedUri = await compressImage(capturedPhoto.uri, 2000)
+          const maxSizeKB = 2000 // 2MB limit
+          let compressedUri = capturedPhoto.uri
+          let attemptCount = 0
+          const maxAttempts = 3
+
+          while (attemptCount < maxAttempts) {
+            const fileStats = await RNFS.stat(compressedUri)
+            const fileSizeKB = fileStats.size / 1024
+            const fileSizeInMB = fileStats.size / (1024 * 1024)
+
+            console.log(
+              `[v0] Compression attempt ${attemptCount + 1}/${maxAttempts}: ${fileSizeInMB.toFixed(2)}MB (${fileSizeKB.toFixed(2)}KB)`,
+            )
+
+            // If already under 2MB, we're done
+            if (fileSizeKB <= maxSizeKB) {
+              console.log(`[v0] Image successfully compressed to ${fileSizeInMB.toFixed(2)}MB - within limit`)
+              break
+            }
+
+            // Need more compression
+            attemptCount++
+            if (attemptCount >= maxAttempts) {
+              throw new Error(
+                `Unable to compress image below 2MB after ${maxAttempts} attempts. Final size: ${fileSizeInMB.toFixed(2)}MB`,
+              )
+            }
+
+            // Apply progressive compression with decreasing quality and width
+            const qualityLevels = [0.6, 0.4, 0.2]
+            const widthLevels = [1000, 800, 600]
+            const quality = qualityLevels[attemptCount - 1]
+            const width = widthLevels[attemptCount - 1]
+
+            console.log(`[v0] Applying compression: quality=${quality}, width=${width}`)
+
+            compressedUri = await compressImage(compressedUri, maxSizeKB, quality, width)
+            setCompressionProgress(`Compressing image... (attempt ${attemptCount + 1}/${maxAttempts})`)
+          }
+
           console.log("Compressed photo URI:", compressedUri)
 
-          await handleInputChange(photoKey, compressedUri) // This will save to both AsyncStorage and cache DB
+          // Final verification - ensure image is always under 2MB
+          const finalStats = await RNFS.stat(compressedUri)
+          const finalSizeInMB = finalStats.size / (1024 * 1024)
+          console.log(`[v0] Final image size: ${finalSizeInMB.toFixed(2)}MB`)
 
+          if (finalSizeInMB > 2) {
+            throw new Error(
+              `Image size (${finalSizeInMB.toFixed(2)}MB) still exceeds 2MB limit after compression. Please retake the photo.`,
+            )
+          }
+
+          // Save the compressed image and clear errors
+          await handleInputChange(photoKey, compressedUri)
+
+          // CHANGE: Final error clearing after successful compression
           if (errors[photoKey]) {
-            setErrors({
-              ...errors,
-              [photoKey]: null,
+            setErrors((prevErrors) => {
+              const newErrors = { ...prevErrors }
+              delete newErrors[photoKey]
+              return newErrors
             })
           }
+
+          console.log(`[v0] Photo ${photoKey} successfully set with size ${finalSizeInMB.toFixed(2)}MB`)
         } catch (compressionError) {
           console.error("Error compressing image:", compressionError)
           Alert.alert(
             "Image Processing Error",
-            "Failed to process the photo. Please try again with a lower resolution photo.",
+            compressionError.message || "Failed to process the photo. Please try again with a lower resolution photo.",
           )
+          // Keep the old photo if compression fails
         } finally {
           setCompressionProgress(null)
         }
@@ -541,22 +1185,144 @@ const isValidUrl = (url) => {
     }
   }
 
-  const validateFinalReading = (reading, isRNV) => {
-    if (reading === "" || reading === null) {
-      return "Final reading is required"
+  const validateDatabaseImages = async (photo1, photo2) => {
+    const validationErrors = {}
+    const compressedImages = {}
+    const compressionMessages = []
+
+    if (photo1) {
+      const { validateImageFromDatabase } = require("../utils/imageUtils")
+      const validation = await validateImageFromDatabase(photo1)
+
+      if (!validation.valid) {
+        validationErrors.photo1 = validation.error
+        console.warn("[v0] Photo 1 validation failed:", validation.error)
+      } else if (validation.needsCompression) {
+        // Image was compressed
+        compressedImages.photo1 = validation.compressedUri
+        compressionMessages.push("Photo 1 was automatically compressed to meet size requirements")
+        console.log("[v0] Photo 1 compressed:", validation.compressedUri)
+      } else {
+        // Image is valid without compression
+        compressedImages.photo1 = validation.compressedUri
+      }
     }
 
-    const numReading = Number.parseFloat(reading)
+    if (photo2) {
+      const { validateImageFromDatabase } = require("../utils/imageUtils")
+      const validation = await validateImageFromDatabase(photo2)
 
-    if (isNaN(numReading)) {
-      return "Final reading must be a number"
+      if (!validation.valid) {
+        validationErrors.photo2 = validation.error
+        console.warn("[v0] Photo 2 validation failed:", validation.error)
+      } else if (validation.needsCompression) {
+        // Image was compressed
+        compressedImages.photo2 = validation.compressedUri
+        compressionMessages.push("Photo 2 was automatically compressed to meet size requirements")
+        console.log("[v0] Photo 2 compressed:", validation.compressedUri)
+      } else {
+        // Image is valid without compression
+        compressedImages.photo2 = validation.compressedUri
+      }
     }
 
-    if (numReading === 0 && meterData.meterCategory === "Electromechanical") {
-      return "Final reading cannot be zero for Electromechanical meters"
-    }
+    if (Object.keys(validationErrors).length > 0) {
+      setImageValidationErrors(validationErrors)
 
-    return null
+      // Show alert with validation errors
+      let errorMessage = "The following images from the database do not meet requirements:\n\n"
+      if (validationErrors.photo1) {
+        errorMessage += `Photo 1: ${validationErrors.photo1}\n`
+      }
+      if (validationErrors.photo2) {
+        errorMessage += `Photo 2: ${validationErrors.photo2}\n`
+      }
+      errorMessage += "\nPlease retake these photos to proceed."
+
+      Alert.alert("Image Validation Failed", errorMessage, [
+        {
+          text: "OK",
+          onPress: () => {
+            // Clear invalid images so user can retake them
+            if (validationErrors.photo1) {
+              handleInputChange("photo1", null)
+            }
+            if (validationErrors.photo2) {
+              handleInputChange("photo2", null)
+            }
+          },
+        },
+      ])
+    } else {
+      // Clear any previous validation errors if images are valid
+      setImageValidationErrors({})
+
+      if (compressedImages.photo1 || compressedImages.photo2) {
+        setMeterData((prev) => ({
+          ...prev,
+          photo1: compressedImages.photo1 || prev.photo1,
+          photo2: compressedImages.photo2 || prev.photo2,
+        }))
+
+        // Show compression message if images were compressed
+        if (compressionMessages.length > 0) {
+          const compressionAlert = compressionMessages.join("\n")
+          Alert.alert(
+            "Image Compression Applied",
+            `${compressionAlert}\n\nImages are now optimized and ready to upload.`,
+          )
+        }
+      }
+    }
+  }
+
+  // NEW: Function to download remote image and convert to file object
+  const downloadRemoteImage = async (imageUrl, fieldName) => {
+    try {
+      console.log(`[DOWNLOAD] Starting download for ${fieldName}: ${imageUrl}`)
+
+      // Extract filename from URL
+      const filename = imageUrl.split("/").pop() || `${fieldName}.jpg`
+      const localPath = `${RNFS.TemporaryDirectoryPath}/${Date.now()}_${filename}`
+
+      // Download the file
+      const downloadResult = await RNFS.downloadFile({
+        fromUrl: imageUrl,
+        toFile: localPath,
+        background: true,
+        discretionary: true,
+        progress: (res) => {
+          console.log(`[DOWNLOAD] Progress for ${fieldName}: ${res.bytesWritten}/${res.contentLength}`)
+        },
+      }).promise
+
+      if (downloadResult.statusCode === 200) {
+        console.log(`[DOWNLOAD] Successfully downloaded ${fieldName} to: ${localPath}`)
+
+        // Check file size and compress if needed
+        const fileStats = await RNFS.stat(localPath)
+        const fileSizeMB = fileStats.size / (1024 * 1024)
+
+        let finalPath = localPath
+
+        if (fileSizeMB > 2) {
+          console.log(`[DOWNLOAD] Image ${fieldName} is too large (${fileSizeMB.toFixed(2)}MB), compressing...`)
+          finalPath = await compressImage(localPath, 1800) // Compress to under 1.8MB
+          console.log(`[DOWNLOAD] Compressed ${fieldName} to: ${finalPath}`)
+        }
+
+        // Create file object
+        const fileObject = await createFileObject(finalPath, fieldName)
+        console.log(`[DOWNLOAD] Created file object for ${fieldName}:`, fileObject)
+
+        return fileObject
+      } else {
+        throw new Error(`Download failed with status: ${downloadResult.statusCode}`)
+      }
+    } catch (error) {
+      console.error(`[DOWNLOAD] Error downloading ${fieldName}:`, error)
+      throw error
+    }
   }
 
   const createFileObject = async (uri, fieldName) => {
@@ -632,58 +1398,106 @@ const isValidUrl = (url) => {
     }
   }
 
-  const getCurrentMeterCategory = async () => {
-    if (meterData.meterCategory) {
-      console.log("Using meter category from state:", meterData.meterCategory)
-      return meterData.meterCategory
+  const handleFinalReadingChange = async (value) => {
+    let numericValue = value.replace(/[^0-9.]/g, "")
+
+    // Prevent multiple decimal points
+    if (numericValue.includes(".")) {
+      const parts = numericValue.split(".")
+      // Keep the first part and only the first two digits after the decimal
+      numericValue = parts[0] + "." + parts.slice(1).join("").substring(0, 2)
     }
 
-    try {
-      const savedCategory = await AsyncStorage.getItem("selectedMeterCategory")
-      if (savedCategory) {
-        console.log("Using meter category from AsyncStorage:", savedCategory)
-        return savedCategory
+    await handleInputChange("finalReading", numericValue)
+    const error = validateFinalReading(numericValue, meterData.meterCategory)
+    setErrors((prev) => ({ ...prev, finalReading: error }))
+
+    if (meterData.previousReading && numericValue) {
+      const finalReading = Number.parseFloat(numericValue)
+      const previousReading = Number.parseFloat(meterData.previousReading)
+      if (!isNaN(finalReading) && !isNaN(previousReading)) {
+        const difference = finalReading - previousReading
+        setReadingDifference(difference)
+      } else {
+        setReadingDifference(null)
       }
-    } catch (error) {
-      console.error("Error getting meter category from AsyncStorage:", error)
+    } else {
+      setReadingDifference(null)
     }
-
-    try {
-      const savedData = await AsyncStorage.getItem("oldMeterData")
-      if (savedData) {
-        const parsedData = JSON.parse(savedData)
-        if (parsedData.meterCategory) {
-          console.log("Using meter category from oldMeterData:", parsedData.meterCategory)
-          return parsedData.meterCategory
-        }
-      }
-    } catch (error) {
-      console.error("Error getting meter category from oldMeterData:", error)
-    }
-
-    console.error("Could not find meter category from any source")
-    return null
   }
 
+  const handleCategoryChangeAndValidate = async (category) => {
+    await handleCategoryChange(category)
+    const error = validateFinalReading(meterData.finalReading, category)
+    setErrors((prev) => ({ ...prev, finalReading: error }))
+  }
+
+  const validateReadings = () => {
+    if (meterData.finalReading && meterData.previousReading) {
+      const finalReading = Number.parseFloat(meterData.finalReading)
+      const previousReading = Number.parseFloat(meterData.previousReading)
+
+      const difference = finalReading - previousReading
+      setReadingDifference(difference)
+
+      setShowValidationModal(true)
+    }
+    return true
+  }
+
+  // FIXED: Enhanced handleNext function with proper account_id handling
   const handleNext = async () => {
     if (isSubmitting) return
+
+    console.log("=== VALIDATION START ===")
+
+    console.log("Debug - meterData.account_id:", meterData.account_id)
+    console.log("Debug - customerData:", customerData)
+    console.log("Debug - route.params.customerData:", route.params?.customerData)
+
+    console.log("Current form data:", {
+      category: meterData.meterCategory,
+      photo1: meterData.photo1 ? "Present" : "Missing",
+      photo2: meterData.photo2 ? "Present" : "Missing",
+      make: meterData.meterMake,
+      serial: meterData.serialNumber,
+      year: meterData.manufactureYear,
+      reading: meterData.finalReading,
+      account_id: meterData.account_id,
+    })
 
     setIsSubmitting(true)
 
     try {
       // Clear previous errors
       setErrors({})
+      setValidationDetails([])
 
-      const requiredFields = ["meterMake", "serialNumber", "manufactureYear", "finalReading"]
-      const missingFields = requiredFields.filter((field) => !meterData[field])
+      // Use enhanced validation that returns detailed information
+      const { validationErrors, validationDetails } = validateAllFields()
 
-      if (!meterData.photo1 || !meterData.photo2) {
-        Alert.alert("Required Photos", "Please take both photos before proceeding")
+      // Save validation details for debug display
+      setValidationDetails(validationDetails)
+
+      console.log("Validation errors:", validationErrors)
+      console.log("Validation details:", validationDetails)
+
+      // Count actual errors
+      const errorCount = Object.keys(validationErrors).length
+
+      // If there are any validation errors, show them and stop submission
+      if (errorCount > 0) {
+        setErrors(validationErrors)
+
+        // Show detailed validation errors with exact reasons
+        showDetailedValidationErrors(validationDetails, errorCount)
+
         setIsSubmitting(false)
         return
       }
 
-      const currentCategory = await getCurrentMeterCategory()
+      // Get current category - use state directly since we have the function now
+      const currentCategory = meterData.meterCategory
 
       if (!currentCategory) {
         Alert.alert("Required Field", "Please select a meter category")
@@ -691,68 +1505,60 @@ const isValidUrl = (url) => {
         return
       }
 
+      const accountId = meterData.account_id || customerData?.account_id || route.params?.customerData?.account_id
+
+      console.log(
+        "[v0] Account ID sources - meterData:",
+        meterData.account_id,
+        "customerData:",
+        customerData?.account_id,
+        "route.params:",
+        route.params?.customerData?.account_id,
+      )
+      console.log("[v0] Resolved accountId:", accountId)
+
+      if (!accountId) {
+        Alert.alert("Error", "Account ID is missing. Cannot proceed.")
+        setIsSubmitting(false)
+        return
+      }
+
+      // Ensure we have the category in state
       if (!meterData.meterCategory) {
         const updatedData = {
           ...meterData,
           meterCategory: currentCategory,
+          account_id: accountId, // Ensure account_id is set
         }
         setMeterData(updatedData)
         await saveData(updatedData)
         await saveToCache(updatedData)
       }
 
-      if (missingFields.length > 0) {
-        Alert.alert("Required Fields", "Please fill in all required fields")
-        setIsSubmitting(false)
-        return
-      }
-
-      if (meterData.serialNumber && /^0+$/.test(meterData.serialNumber)) {
-        Alert.alert("Invalid Serial Number", "Please enter a valid serial number.")
-        setIsSubmitting(false)
-        return
-      }
-
-      const isRNV = currentCategory === "RNV"
-      const finalReadingError = validateFinalReading(meterData.finalReading, isRNV)
-
-      if (finalReadingError) {
-        setErrors((prev) => ({ ...prev, finalReading: finalReadingError }))
-        Alert.alert("Validation Error", finalReadingError)
-        setIsSubmitting(false)
-        return
-      }
-
       const updatedMeterData = {
         ...meterData,
         meterCategory: currentCategory,
+        account_id: accountId, // Ensure account_id is set
       }
 
-      if (!updatedMeterData.account_id && customerData?.account_id) {
-        updatedMeterData.account_id = customerData.account_id
-        setMeterData(updatedMeterData)
-        await saveData(updatedMeterData)
-        await saveToCache(updatedMeterData)
-      }
-
-      // Ensure account_id is present before saving to cache
-      const finalMeterDataToCache = {
-        ...updatedMeterData,
-        account_id: updatedMeterData.account_id || customerData?.account_id,
-      }
-
-      if (!finalMeterDataToCache.account_id) {
+      // Double check account_id
+      if (!updatedMeterData.account_id) {
+        console.error("Account ID is still missing after update")
         Alert.alert("Error", "Account ID is missing. Cannot save meter data to cache.")
         setIsSubmitting(false)
         return
       }
 
-      // Save data to SQLite cache one final time before navigation
+      const finalMeterDataToCache = {
+        ...updatedMeterData,
+        account_id: accountId,
+      }
+
       try {
         await saveToCache(finalMeterDataToCache)
-        console.log("Old meter data successfully saved to SQLite cache before navigation.")
+        console.log("[v0] Old meter data successfully saved to SQLite cache before submission.")
       } catch (cacheError) {
-        console.error("Error saving old meter data to SQLite cache:", cacheError)
+        console.error("[v0] Error saving old meter data to SQLite cache:", cacheError)
         Alert.alert("Database Error", "Failed to save meter data locally. Please try again.")
         setIsSubmitting(false)
         return
@@ -763,58 +1569,120 @@ const isValidUrl = (url) => {
       const isOnlineMode = networkState.isConnected && networkState.isInternetReachable
 
       if (isOnlineMode) {
-        // ONLINE MODE: Create instance and upload old meter data
-        console.log("Online mode - creating instance and uploading old meter data")
+        console.log("[v0] Online mode - creating instance and uploading old meter data")
 
         try {
           // Step 1: Create server instance (only if not already created)
           if (!serverInstanceCreated) {
-            console.log(`Creating server instance for account ID: ${finalMeterDataToCache.account_id}`)
-            const instanceResult = await createServerInstance(finalMeterDataToCache.account_id)
+            console.log(`[v0] Creating server instance for account ID: ${accountId}`)
+            const instanceResult = await createServerInstance(accountId)
 
-            console.log("Server instance creation result:", instanceResult)
+            console.log("[v0] Server instance creation result:", instanceResult)
 
-            // ULTRA OPTIMISTIC: Always assume success unless it's a clear network error
             if (instanceResult.isNetworkError) {
-              console.error("Network error during server instance creation:", instanceResult.error)
+              console.error("[v0] Network error during server instance creation:", instanceResult.error)
               Alert.alert("Network Error", instanceResult.error)
               setIsSubmitting(false)
               return
             }
 
-            // For everything else, assume success
-            console.log("Server instance assumed successful (ultra optimistic approach)")
+            console.log("[v0] Server instance assumed successful")
             setServerInstanceCreated(true)
           }
 
-          // Step 2: Upload old meter data
           const userId = (await AsyncStorage.getItem("userId")) || "0"
 
-          const oldMeterDataForUpload = {
-            account_id: finalMeterDataToCache.account_id,
-            serial_no_old: finalMeterDataToCache.serialNumber,
-            mfd_year_old: finalMeterDataToCache.manufactureYear,
-            final_reading: finalMeterDataToCache.finalReading,
-            meter_make_old: finalMeterDataToCache.meterMake,
-            category:
-              finalMeterDataToCache.meterCategory === "Electromechanical" ? "EM" : finalMeterDataToCache.meterCategory,
-            image_1_old: finalMeterDataToCache.photo1,
-            image_2_old: finalMeterDataToCache.photo2,
-            created_by: userId,
+          // NEW: Handle image file preparation for upload
+          let image1File = null
+          let image2File = null
+
+          // Process photo1
+          if (finalMeterDataToCache.photo1) {
+            if (finalMeterDataToCache.photo1.startsWith("http")) {
+              console.log("[IMAGE] Photo1 is a remote URL, downloading...")
+              try {
+                image1File = await downloadRemoteImage(finalMeterDataToCache.photo1, "image_1_old")
+              } catch (downloadError) {
+                console.error("[IMAGE] Failed to download photo1:", downloadError)
+                Alert.alert("Image Error", "Failed to download photo 1. Please retake the photo.")
+                setIsSubmitting(false)
+                return
+              }
+            } else {
+              console.log("[IMAGE] Photo1 is a local file, creating file object...")
+              try {
+                image1File = await createFileObject(finalMeterDataToCache.photo1, "image_1_old")
+              } catch (fileError) {
+                console.error("[IMAGE] Failed to create file object for photo1:", fileError)
+                Alert.alert("Image Error", "Failed to process photo 1. Please retake the photo.")
+                setIsSubmitting(false)
+                return
+              }
+            }
           }
 
-          console.log("Uploading old meter data:", oldMeterDataForUpload)
-          const uploadResult = await uploadOldMeterData(oldMeterDataForUpload)
+          // Process photo2
+          if (finalMeterDataToCache.photo2) {
+            if (finalMeterDataToCache.photo2.startsWith("http")) {
+              console.log("[IMAGE] Photo2 is a remote URL, downloading...")
+              try {
+                image2File = await downloadRemoteImage(finalMeterDataToCache.photo2, "image_2_old")
+              } catch (downloadError) {
+                console.error("[IMAGE] Failed to download photo2:", downloadError)
+                Alert.alert("Image Error", "Failed to download photo 2. Please retake the photo.")
+                setIsSubmitting(false)
+                return
+              }
+            } else {
+              console.log("[IMAGE] Photo2 is a local file, creating file object...")
+              try {
+                image2File = await createFileObject(finalMeterDataToCache.photo2, "image_2_old")
+              } catch (fileError) {
+                console.error("[IMAGE] Failed to create file object for photo2:", fileError)
+                Alert.alert("Image Error", "Failed to process photo 2. Please retake the photo.")
+                setIsSubmitting(false)
+                return
+              }
+            }
+          }
 
-          console.log("Old meter upload result:", uploadResult)
+          // Prepare form data for upload - FIXED: Use proper field names
+          const formData = new FormData()
+
+          formData.append("account_id", String(accountId))
+          formData.append("serial_no_old", finalMeterDataToCache.serialNumber || "")
+          formData.append("mfd_year_old", finalMeterDataToCache.manufactureYear || "")
+          formData.append("final_reading", finalMeterDataToCache.finalReading || "")
+          formData.append("meter_make_old", finalMeterDataToCache.meterMake || "")
+          formData.append(
+            "category",
+            finalMeterDataToCache.meterCategory === "Electromechanical" ? "EM" : finalMeterDataToCache.meterCategory,
+          )
+          formData.append("created_by", userId)
+
+          console.log("[v0] FormData being sent with account_id:", String(accountId))
+
+          // Add image files if available
+          if (image1File) {
+            formData.append("image_1_old", image1File)
+            console.log("[UPLOAD] Added image1 file to form data")
+          } else {
+            console.warn("[UPLOAD] No image1 file available")
+          }
+
+          if (image2File) {
+            formData.append("image_2_old", image2File)
+            console.log("[UPLOAD] Added image2 file to form data")
+          } else {
+            console.warn("[UPLOAD] No image2 file available")
+          }
+
+          const uploadResult = await uploadOldMeterData(formData)
+
+          console.log("[v0] Old meter upload result:", uploadResult)
 
           if (!uploadResult.success) {
-            console.error("Failed to upload old meter data:", uploadResult.error)
-            console.error("Upload result details:", {
-              error: uploadResult.error,
-              status: uploadResult.status,
-              data: uploadResult.data,
-            })
+            console.error("[v0] Failed to upload old meter data:", uploadResult.error)
 
             let errorMessage = "Failed to upload old meter data. Please try again."
             if (uploadResult.status === 422) {
@@ -830,7 +1698,35 @@ const isValidUrl = (url) => {
             return
           }
 
-          console.log("Old meter data uploaded successfully")
+          console.log("[v0] Old meter data uploaded successfully to server")
+
+          try {
+            const oldMeterDataForDB = {
+              account_id: accountId,
+              serial_no_old: finalMeterDataToCache.serialNumber,
+              mfd_year_old: finalMeterDataToCache.manufactureYear,
+              final_reading: finalMeterDataToCache.finalReading,
+              meter_make_old: finalMeterDataToCache.meterMake,
+              category:
+                finalMeterDataToCache.meterCategory === "Electromechanical"
+                  ? "EM"
+                  : finalMeterDataToCache.meterCategory,
+              image_1_old: finalMeterDataToCache.photo1,
+              image_2_old: finalMeterDataToCache.photo2,
+              section_code: customerData?.section || "",
+              created_by: userId,
+              timestamp: new Date().toISOString(),
+              is_uploaded: 1, // Mark as uploaded since it succeeded online
+              is_valid: 1,
+            }
+
+            console.log("[v0] Saving uploaded old meter data to database for persistence:", oldMeterDataForDB)
+            const savedId = await saveOldMeterData(oldMeterDataForDB)
+            console.log("[v0] Old meter data saved to database with ID:", savedId)
+          } catch (dbError) {
+            console.error("[v0] Error saving old meter data to database after successful upload:", dbError)
+            // Don't fail the flow, just log the error
+          }
 
           // Clear cache after successful upload
           try {
@@ -845,26 +1741,25 @@ const isValidUrl = (url) => {
               meterCategory: "",
             })
           } catch (cacheError) {
-            console.error("Error clearing cache:", cacheError)
+            console.error("[v0] Error clearing cache:", cacheError)
           }
 
-          // Navigate to NewMeterScreen on success
+          console.log("[v0] Navigating to NewMeter screen with old meter data")
           navigation.navigate("NewMeter", {
             oldMeterData: finalMeterDataToCache,
           })
         } catch (error) {
-          console.error("Exception in online mode submission:", error)
+          console.error("[v0] Exception in online mode submission:", error)
           Alert.alert("Error", `An unexpected error occurred: ${error.message || "Unknown error"}. Please try again.`)
         }
       } else {
-        // OFFLINE MODE: Save to database
-        console.log("Offline mode - saving old meter data to database")
+        console.log("[v0] Offline mode - saving old meter data to database")
 
         try {
           const userId = (await AsyncStorage.getItem("userId")) || "0"
 
           const oldMeterDataForDB = {
-            account_id: finalMeterDataToCache.account_id,
+            account_id: accountId,
             serial_no_old: finalMeterDataToCache.serialNumber,
             mfd_year_old: finalMeterDataToCache.manufactureYear,
             final_reading: finalMeterDataToCache.finalReading,
@@ -876,84 +1771,47 @@ const isValidUrl = (url) => {
             section_code: customerData?.section || "",
             created_by: userId,
             timestamp: new Date().toISOString(),
-            is_uploaded: 0,
+            is_uploaded: 0, // Mark as not uploaded since it's offline
             is_valid: 1,
           }
 
-          console.log("Saving old meter data to database:", oldMeterDataForDB)
+          console.log("[v0] Saving old meter data to database in offline mode:", oldMeterDataForDB)
           const savedId = await saveOldMeterData(oldMeterDataForDB)
 
           if (savedId) {
-            console.log("Old meter data saved to database with ID:", savedId)
-            Alert.alert("Data Saved", "Old meter data saved locally", [
-              {
-                text: "OK",
-                onPress: () => {
-                  // Navigate to NewMeterScreen
-                  navigation.navigate("NewMeter", {
-                    oldMeterData: finalMeterDataToCache,
-                  })
+            console.log("[v0] Old meter data saved to database with ID:", savedId)
+            Alert.alert(
+              "Data Saved",
+              "Old meter data saved locally and will be uploaded when connection is available",
+              [
+                {
+                  text: "OK",
+                  onPress: () => {
+                    navigation.navigate("NewMeter", {
+                      oldMeterData: finalMeterDataToCache,
+                    })
+                  },
                 },
-              },
-            ])
+              ],
+            )
           } else {
             Alert.alert("Error", "Failed to save old meter data locally. Please try again.")
             setIsSubmitting(false)
             return
           }
         } catch (error) {
-          console.error("Error in offline mode submission:", error)
+          console.error("[v0] Error in offline mode submission:", error)
           Alert.alert("Error", `Failed to save old meter data locally: ${error.message}. Please try again.`)
           setIsSubmitting(false)
           return
         }
       }
     } catch (error) {
-      console.error("Error in handleNext:", error)
+      console.error("[v0] Error in handleNext:", error)
       Alert.alert("Error", `An unexpected error occurred: ${error.message || "Unknown error"}. Please try again.`)
     } finally {
       setIsSubmitting(false)
     }
-  }
-
-  const handleFinalReadingChange = async (value) => {
-    await handleInputChange("finalReading", value)
-    const isRNV = meterData.meterCategory === "RNV"
-    const error = validateFinalReading(value, isRNV)
-    setErrors((prev) => ({ ...prev, finalReading: error }))
-
-    if (meterData.previousReading && value) {
-      const finalReading = Number.parseFloat(value)
-      const previousReading = Number.parseFloat(meterData.previousReading)
-      if (!isNaN(finalReading) && !isNaN(previousReading)) {
-        const difference = finalReading - previousReading
-        setReadingDifference(difference)
-      } else {
-        setReadingDifference(null)
-      }
-    } else {
-      setReadingDifference(null)
-    }
-  }
-
-  const handleCategoryChangeAndValidate = async (category) => {
-    await handleCategoryChange(category)
-    const isNonElectromechanical = category === "RNV" || category === "MNR" || category === "DC"
-    const error = validateFinalReading(meterData.finalReading, isNonElectromechanical)
-    setErrors((prev) => ({ ...prev, finalReading: error }))
-  }
-
-  const validateReadings = () => {
-    if (meterData.finalReading && meterData.previousReading) {
-      const finalReading = Number.parseFloat(meterData.finalReading)
-      const previousReading = Number.parseFloat(meterData.previousReading)
-
-      const difference = finalReading - previousReading
-      setReadingDifference(difference)
-
-      setShowValidationModal(true)
-    }
-    return true
   }
 
   const renderCustomerDetails = () => (
@@ -990,27 +1848,141 @@ const isValidUrl = (url) => {
     return (
       <View style={styles.debugPanel}>
         <Text style={styles.debugTitle}>Debug Info (Development Only)</Text>
-        <Text style={styles.debugText}>Current Category: {meterData.meterCategory || "none"}</Text>
+
+        {/* Current Input Values */}
+        <Text style={styles.debugSectionTitle}>Current Input Values:</Text>
+        <Text style={styles.debugText}>Account ID: {meterData.account_id || "Not set"}</Text>
+        <Text style={styles.debugText}>Meter Category: {meterData.meterCategory || "Not set"}</Text>
+        <Text style={styles.debugText}>Meter Make: {meterData.meterMake || "Not set"}</Text>
+        <Text style={styles.debugText}>Serial Number: {meterData.serialNumber || "Not set"}</Text>
+        <Text style={styles.debugText}>Manufacture Year: {meterData.manufactureYear || "Not set"}</Text>
+        <Text style={styles.debugText}>Final Reading: {meterData.finalReading || "Not set"}</Text>
+        <Text style={styles.debugText}>Previous Reading: {meterData.previousReading || "Not set"}</Text>
+        <Text style={styles.debugText}>Previous Reading Date: {meterData.previousReadingDate || "Not set"}</Text>
+
+        {/* Validation Status */}
+        {validationDetails.length > 0 && (
+          <>
+            <Text style={styles.debugSectionTitle}>Validation Status:</Text>
+            {validationDetails.map((detail, index) => (
+              <Text key={index} style={[styles.debugText, detail.error ? styles.debugError : styles.debugSuccess]}>
+                {detail.status} {detail.field}: "{detail.value}"{detail.error && ` → ${detail.error}`}
+              </Text>
+            ))}
+          </>
+        )}
+
+        {/* Image Information */}
+        <Text style={styles.debugSectionTitle}>Image Information:</Text>
+
+        {["photo1", "photo2"].map((photoKey) => {
+          const info = imageInfo[photoKey]
+          return (
+            <View key={photoKey} style={styles.imageInfoContainer}>
+              <Text style={styles.debugSubTitle}>{photoKey.toUpperCase()}:</Text>
+              {info ? (
+                info.exists ? (
+                  <>
+                    <Text style={styles.debugText}>• URI: {info.uri.substring(0, 50)}...</Text>
+                    <Text style={styles.debugText}>
+                      • Size: {info.sizeKB === null ? "N/A" : `${info.sizeKB} KB`} (
+                      {info.sizeMB === null ? "N/A" : `${info.sizeMB} MB`})
+                    </Text>
+                    <Text style={styles.debugText}>
+                      • Format: {info.extension} ({info.mimeType})
+                    </Text>
+                    <Text style={styles.debugText}>
+                      • Under 2MB: {info.isUnder2MB === null ? "N/A" : info.isUnder2MB ? "✅ Yes" : "❌ No"}
+                    </Text>
+                    <Text style={styles.debugText}>
+                      • Type: {info.isLocalFile ? "📱 Local File" : info.isRemoteUrl ? "🌐 Remote URL" : "Unknown"}
+                    </Text>
+                    {info.isFromServer && <Text style={styles.debugText}>• From Server: ✅ Yes</Text>}
+                    <Text style={styles.debugText}>• Filename: {info.filename}</Text>
+                    {info.lastModified !== "unknown" && (
+                      <Text style={styles.debugText}>• Modified: {new Date(info.lastModified).toLocaleString()}</Text>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.debugError}>• File does not exist</Text>
+                    <Text style={styles.debugText}>• URI: {info.uri}</Text>
+                    {info.error && <Text style={styles.debugError}>• Error: {info.error}</Text>}
+                  </>
+                )
+              ) : (
+                <Text style={styles.debugText}>• No image set</Text>
+              )}
+            </View>
+          )
+        })}
+
+        {/* System Information */}
+        <Text style={styles.debugSectionTitle}>System Information:</Text>
         <Text style={styles.debugText}>Last Category Sent: {lastCategorySent || "none"}</Text>
         <Text style={styles.debugText}>Upload Attempts: {uploadAttempts}</Text>
-        <Text style={styles.debugText}>Server Instance Created: {serverInstanceCreated ? "Yes" : "No"}</Text>
+        <Text style={styles.debugText}>Server Instance Created: {serverInstanceCreated ? "✅ Yes" : "❌ No"}</Text>
+        <Text style={styles.debugText}>Online Status: {isOnline ? "✅ Online" : "❌ Offline"}</Text>
+        <Text style={styles.debugText}>Submitting: {isSubmitting ? "🔄 Yes" : "✅ No"}</Text>
+
+        {/* Debug Actions */}
+        <Text style={styles.debugSectionTitle}>Debug Actions:</Text>
+        <View style={styles.debugActionsRow}>
+          <TouchableOpacity
+            style={styles.debugButton}
+            onPress={async () => {
+              const currentCategory = await getCurrentMeterCategory()
+              Alert.alert("Current Category", `From all sources: ${currentCategory || "Not found"}`)
+            }}
+          >
+            <Text style={styles.debugButtonText}>Check Category</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.debugButton}
+            onPress={() => {
+              setServerInstanceCreated(false)
+              Alert.alert("Debug", "Server instance flag reset")
+            }}
+          >
+            <Text style={styles.debugButtonText}>Reset Instance</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.debugButton}
+            onPress={() => {
+              // Refresh image info
+              if (meterData.photo1) getImageInfo(meterData.photo1, "photo1")
+              if (meterData.photo2) getImageInfo(meterData.photo2, "photo2")
+              Alert.alert("Debug", "Image info refreshed")
+            }}
+          >
+            <Text style={styles.debugButtonText}>Refresh Images</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Test Validation */}
         <TouchableOpacity
-          style={styles.debugButton}
-          onPress={async () => {
-            const currentCategory = await getCurrentMeterCategory()
-            Alert.alert("Current Category", `From all sources: ${currentCategory || "Not found"}`)
-          }}
-        >
-          <Text style={styles.debugButtonText}>Check Category</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.debugButton}
+          style={[styles.debugButton, styles.fullWidthButton]}
           onPress={() => {
-            setServerInstanceCreated(false)
-            Alert.alert("Debug", "Server instance flag reset")
+            const { validationErrors, validationDetails } = validateAllFields()
+            const errorCount = Object.keys(validationErrors).length
+            if (errorCount > 0) {
+              showDetailedValidationErrors(validationDetails, errorCount)
+            } else {
+              Alert.alert("Validation Test", "✅ All fields are valid!")
+            }
           }}
         >
-          <Text style={styles.debugButtonText}>Reset Instance Flag</Text>
+          <Text style={styles.debugButtonText}>Test Validation</Text>
+        </TouchableOpacity>
+
+        {/* Raw Data */}
+        <TouchableOpacity
+          style={[styles.debugButton, styles.fullWidthButton]}
+          onPress={() => {
+            Alert.alert("Raw Meter Data", JSON.stringify(meterData, null, 2), [{ text: "OK" }], { cancelable: true })
+          }}
+        >
+          <Text style={styles.debugButtonText}>Show Raw Data</Text>
         </TouchableOpacity>
       </View>
     )
@@ -1027,6 +1999,44 @@ const isValidUrl = (url) => {
     return meterData.meterCategory === "DC"
   }
 
+  // Enhanced validation display function
+  const showDetailedValidationErrors = (validationDetails, errorCount) => {
+    let errorMessage = `Please fix the following ${errorCount} error${errorCount > 1 ? "s" : ""}:\n\n`
+
+    validationDetails.forEach((detail, index) => {
+      if (detail.error) {
+        errorMessage += `${index + 1}. ${detail.field}\n`
+        errorMessage += `   Current Value: "${detail.value}"\n`
+        errorMessage += `   ❌ Error: ${detail.error}\n\n`
+      }
+    })
+
+    errorMessage += "Please correct the highlighted fields and try again."
+
+    Alert.alert(`Validation Failed (${errorCount} Error${errorCount > 1 ? "s" : ""})`, errorMessage, [
+      {
+        text: "Show Field Details",
+        onPress: () => {
+          // Show detailed field-by-field breakdown
+          let fieldDetails = "FIELD VALIDATION DETAILS:\n\n"
+          validationDetails.forEach((detail) => {
+            fieldDetails += `${detail.status} ${detail.field}: "${detail.value}"\n`
+            if (detail.error) {
+              fieldDetails += `   → ${detail.error}\n`
+            }
+            fieldDetails += "\n"
+          })
+
+          Alert.alert("Complete Validation Report", fieldDetails, [{ text: "OK" }])
+        },
+      },
+      {
+        text: "OK",
+        style: "default",
+      },
+    ])
+  }
+
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
@@ -1041,6 +2051,9 @@ const isValidUrl = (url) => {
             <Icon name="arrow-undo" size={28} color="#000" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Old Meter Details</Text>
+          {/* <TouchableOpacity style={styles.debugToggle} onPress={() => setShowDebugInfo(!showDebugInfo)}>
+            <Text style={styles.debugToggleText}>{showDebugInfo ? "🔴 Debug" : "🐛 Debug"}</Text>
+          </TouchableOpacity> */}
         </View>
 
         <ScrollView
@@ -1053,15 +2066,16 @@ const isValidUrl = (url) => {
           <View style={styles.content}>
             {renderCustomerDetails()}
 
-            <View style={styles.formGroup}>
+            <View style={styles.formGroup} id="meterCategory">
               <Text style={styles.label}>
                 Meter Category <Text style={styles.required}>*required</Text>
               </Text>
-              <View style={styles.radioGroup}>
+              <View style={[styles.radioGroup, errors.meterCategory && styles.errorFieldContainer]}>
                 <TouchableOpacity
                   style={[
                     styles.radioButton,
                     meterData.meterCategory === "Electromechanical" && styles.radioButtonSelected,
+                    errors.meterCategory && styles.errorRadioButton,
                   ]}
                   onPress={() => handleCategoryChangeAndValidate("Electromechanical")}
                 >
@@ -1075,7 +2089,11 @@ const isValidUrl = (url) => {
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.radioButton, meterData.meterCategory === "MNR" && styles.radioButtonSelected]}
+                  style={[
+                    styles.radioButton,
+                    meterData.meterCategory === "MNR" && styles.radioButtonSelected,
+                    errors.meterCategory && styles.errorRadioButton,
+                  ]}
                   onPress={() => handleCategoryChangeAndValidate("MNR")}
                 >
                   <View style={[styles.radioCircle, meterData.meterCategory === "MNR" && styles.radioCircleSelected]} />
@@ -1083,7 +2101,11 @@ const isValidUrl = (url) => {
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.radioButton, meterData.meterCategory === "DC" && styles.radioButtonSelected]}
+                  style={[
+                    styles.radioButton,
+                    meterData.meterCategory === "DC" && styles.radioButtonSelected,
+                    errors.meterCategory && styles.errorRadioButton,
+                  ]}
                   onPress={() => handleCategoryChangeAndValidate("DC")}
                 >
                   <View style={[styles.radioCircle, meterData.meterCategory === "DC" && styles.radioCircleSelected]} />
@@ -1091,102 +2113,130 @@ const isValidUrl = (url) => {
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.radioButton, meterData.meterCategory === "RNV" && styles.radioButtonSelected]}
+                  style={[
+                    styles.radioButton,
+                    meterData.meterCategory === "RNV" && styles.radioButtonSelected,
+                    errors.meterCategory && styles.errorRadioButton,
+                  ]}
                   onPress={() => handleCategoryChangeAndValidate("RNV")}
                 >
                   <View style={[styles.radioCircle, meterData.meterCategory === "RNV" && styles.radioCircleSelected]} />
                   <Text style={styles.radioLabel}>RNV</Text>
                 </TouchableOpacity>
               </View>
+              {errors.meterCategory && <Text style={styles.errorText}>{errors.meterCategory}</Text>}
             </View>
 
             {["photo1", "photo2"].map((photoKey, index) => (
-  <View key={photoKey} style={styles.formGroup}>
-    <Text style={styles.label}>
-      Photo {index + 1} with readings on display <Text style={styles.required}>*required</Text>
-    </Text>
+              <View key={photoKey} style={styles.formGroup} id={photoKey}>
+                <Text style={styles.label}>
+                  Photo {index + 1} with readings on display <Text style={styles.required}>*required</Text>
+                </Text>
 
-    <TouchableOpacity style={styles.photoButton} onPress={() => takePhoto(photoKey)}>
-      <Text style={styles.photoButtonText}>
-        {meterData[photoKey] ? "Retake Photo" : "Take Photo"}
-      </Text>
-    </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.photoButton,
+                    (errors[photoKey] || imageValidationErrors[photoKey]) && styles.errorPhotoButton,
+                  ]}
+                  onPress={() => takePhoto(photoKey)}
+                >
+                  <Text style={styles.photoButtonText}>{meterData[photoKey] ? "Retake Photo" : "Take Photo"}</Text>
+                </TouchableOpacity>
 
-    {processingPhoto === photoKey ? (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#007AFF" />
-        <Text style={styles.loadingText}>
-          {compressionProgress || "Processing photo..."}
-        </Text>
-      </View>
-    ) : (
-      meterData[photoKey] && (
-        <View style={styles.photoPreviewContainer}>
-          {isValidUrl(meterData[photoKey]) ? (
-            <Image
-              source={{ 
-                uri: meterData[photoKey],
-                cache: 'force-cache'
-              }}
-              style={styles.photoPreview}
-              resizeMode="contain"
-              onError={(error) => {
-                console.error("Image loading error:", error.nativeEvent.error)
-                Alert.alert("Error", "Failed to load photo preview. Please check your internet connection.")
-              }}
-              onLoadStart={() => console.log("Starting to load image:", meterData[photoKey])}
-              onLoadEnd={() => console.log("Finished loading image")}
-            />
-          ) : (
-            <Text style={styles.invalidUrlText}>
-              Invalid image URL: {meterData[photoKey]}
-            </Text>
-          )}
-        </View>
-      )
-    )}
-  </View>
-))}
+                {processingPhoto === photoKey ? (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="large" color="#007AFF" />
+                    <Text style={styles.loadingText}>{compressionProgress || "Processing photo..."}</Text>
+                  </View>
+                ) : (
+                  meterData[photoKey] && (
+                    <View style={styles.photoPreviewContainer}>
+                      {isValidUrl(meterData[photoKey]) ? (
+                        <Image
+                          source={{
+                            uri: meterData[photoKey],
+                            cache: "force-cache",
+                          }}
+                          style={styles.photoPreview}
+                          resizeMode="contain"
+                          onError={(error) => {
+                            console.error("Image loading error:", error.nativeEvent.error)
+                            Alert.alert("Error", "Failed to load photo preview. Please check your internet connection.")
+                          }}
+                          onLoadStart={() => console.log("Starting to load image:", meterData[photoKey])}
+                          onLoadEnd={() => console.log("Finished loading image")}
+                        />
+                      ) : (
+                        <Text style={styles.invalidUrlText}>Invalid image URL: {meterData[photoKey]}</Text>
+                      )}
+                    </View>
+                  )
+                )}
+                {(errors[photoKey] || imageValidationErrors[photoKey]) && (
+                  <Text style={styles.errorText}>{errors[photoKey] || imageValidationErrors[photoKey]}</Text>
+                )}
+              </View>
+            ))}
 
+            <View style={styles.formGroup} id="meterMake">
+              <MeterMakeDropdown
+                label={
+                  <>
+                    Meter Make <Text style={styles.required}>*required</Text>
+                  </>
+                }
+                onSelect={handleMeterMakeSelect}
+                disabled={isMeterMakeDisabled()}
+                value={meterData.meterMake}
+                placeholder="Select Meter Make"
+                error={errors.meterMake}
+              />
+              {errors.meterMake && <Text style={styles.errorText}>{errors.meterMake}</Text>}
+            </View>
 
-            <MeterMakeDropdown
-              label={
-                <>
-                  Meter Make <Text style={styles.required}>*required</Text>
-                </>
-              }
-              onSelect={handleMeterMakeSelect}
-              disabled={isMeterMakeDisabled()}
-              value={meterData.meterMake}
-              placeholder="Select Meter Make"
-            />
-
-            <View style={styles.formGroup}>
+            <View style={styles.formGroup} id="serialNumber">
               <Text style={styles.label}>
                 Meter Serial No <Text style={styles.required}>*required</Text>
               </Text>
               <TextInput
-                style={[styles.input, isFieldDisabled("serialNumber") && styles.disabledInput]}
-                placeholder="Enter serial number"
+                style={[
+                  styles.input,
+                  isFieldDisabled("serialNumber") && styles.disabledInput,
+                  errors.serialNumber && styles.errorInput,
+                ]}
+                placeholder={
+                  meterData.meterCategory === "DC"
+                    ? "Serial number (any characters allowed for DC)"
+                    : "Enter serial number "
+                }
                 value={meterData.serialNumber}
-                onChangeText={(text) => handleInputChange("serialNumber", text)}
+                onChangeText={handleSerialNumberChange}
                 editable={!isFieldDisabled("serialNumber")}
+                maxLength={meterData.meterCategory === "DC" ? undefined : 10}
               />
+              {errors.serialNumber && <Text style={styles.errorText}>{errors.serialNumber}</Text>}
             </View>
 
-            <View style={styles.formGroup}>
+            <View style={styles.formGroup} id="manufactureYear">
               <Text style={styles.label}>
                 Year Of Manufacture <Text style={styles.required}>*required</Text>
               </Text>
               <TextInput
-                style={[styles.input, isFieldDisabled("manufactureYear") && styles.disabledInput]}
-                placeholder="Enter manufacture year"
+                style={[
+                  styles.input,
+                  isFieldDisabled("manufactureYear") && styles.disabledInput,
+                  errors.manufactureYear && styles.errorInput,
+                ]}
+                placeholder={
+                  meterData.meterCategory === "DC" ? "Enter 0 for DC category" : "Enter manufacture year (4 digits)"
+                }
                 value={meterData.manufactureYear}
-                onChangeText={(text) => handleInputChange("manufactureYear", text)}
+                onChangeText={handleManufactureYearChange}
                 keyboardType="numeric"
-                maxLength={4}
+                maxLength={meterData.meterCategory === "DC" ? undefined : 4}
                 editable={!isFieldDisabled("manufactureYear")}
               />
+              {errors.manufactureYear && <Text style={styles.errorText}>{errors.manufactureYear}</Text>}
             </View>
 
             {meterData.previousReading && (
@@ -1200,19 +2250,27 @@ const isValidUrl = (url) => {
               </View>
             )}
 
-            <View style={styles.formGroup}>
+            <View style={styles.formGroup} id="finalReading">
               <Text style={styles.label}>
                 Final Reading (FR)-kWh <Text style={styles.required}>*required</Text>
               </Text>
               <TextInput
-                style={[styles.input, isFieldDisabled("finalReading") && styles.disabledInput]}
-                placeholder="Enter final reading"
+                style={[
+                  styles.input,
+                  isFieldDisabled("finalReading") && styles.disabledInput,
+                  errors.finalReading && styles.errorInput,
+                ]}
+                placeholder={
+                  meterData.meterCategory === "DC"
+                    ? "Enter 0 for DC category"
+                    : "Enter final reading (positive numbers only)"
+                }
                 value={meterData.finalReading}
-                onChangeText={(text) => handleFinalReadingChange(text)}
+                onChangeText={handleFinalReadingChange}
                 keyboardType="numeric"
                 editable={!isFieldDisabled("finalReading")}
               />
-              {errors.finalReading ? <Text style={styles.errorText}>{errors.finalReading}</Text> : null}
+              {errors.finalReading && <Text style={styles.errorText}>{errors.finalReading}</Text>}
 
               {readingDifference !== null && meterData.previousReading && (
                 <View style={styles.differenceContainer}>
@@ -1305,7 +2363,6 @@ const isValidUrl = (url) => {
   )
 }
 
-// Update styles to ensure proper spacing with keyboard
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1318,7 +2375,7 @@ const styles = StyleSheet.create({
   },
   scrollViewContent: {
     width: "100%",
-    paddingBottom: 100, // Add padding at the bottom to ensure content is not covered by buttons and tab bar
+    paddingBottom: 100,
   },
   header: {
     width: "100%",
@@ -1338,6 +2395,14 @@ const styles = StyleSheet.create({
     color: "#000",
     flex: 1,
     textAlign: "center",
+  },
+  debugToggle: {
+    padding: 8,
+  },
+  debugToggleText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#007AFF",
   },
   networkIndicator: {
     padding: 8,
@@ -1413,12 +2478,21 @@ const styles = StyleSheet.create({
     backgroundColor: "#f0f0f0",
     color: "#666",
   },
+  errorInput: {
+    borderColor: "red",
+    backgroundColor: "#fff5f5",
+  },
   photoButton: {
     backgroundColor: "#007AFF",
     paddingVertical: 12,
     borderRadius: 8,
     alignItems: "center",
     width: "100%",
+  },
+  errorPhotoButton: {
+    borderColor: "red",
+    borderWidth: 2,
+    backgroundColor: "#fff5f5",
   },
   photoButtonText: {
     color: "#fff",
@@ -1455,7 +2529,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     marginTop: 24,
-    marginBottom: 24, // Increased bottom margin
+    marginBottom: 24,
     width: "100%",
   },
   button: {
@@ -1588,6 +2662,10 @@ const styles = StyleSheet.create({
     borderColor: "#007AFF",
     backgroundColor: "#E3F2FD",
   },
+  errorRadioButton: {
+    borderColor: "red",
+    backgroundColor: "#fff5f5",
+  },
   radioCircle: {
     height: 20,
     width: 20,
@@ -1612,14 +2690,15 @@ const styles = StyleSheet.create({
   errorText: {
     color: "red",
     marginTop: 5,
+    fontSize: 12,
+    fontWeight: "600",
   },
   invalidUrlText: {
-  color: 'red',
-  textAlign: 'center',
-  padding: 10,
-  fontSize: 14,
-},
-  
+    color: "red",
+    textAlign: "center",
+    padding: 10,
+    fontSize: 14,
+  },
   differenceContainer: {
     marginTop: 8,
     padding: 8,
@@ -1643,36 +2722,95 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  // Debug panel styles
-  debugPanel: {
-    padding: 10,
-    backgroundColor: "#ffe8e8",
+  // Error field container
+  errorFieldContainer: {
+    borderColor: "red",
     borderWidth: 1,
-    borderColor: "#ff8080",
+    borderRadius: 8,
+    padding: 8,
+    backgroundColor: "#fff5f5",
+  },
+  // Enhanced Debug panel styles
+  debugPanel: {
+    padding: 12,
+    backgroundColor: "#f8f9fa",
+    borderWidth: 2,
+    borderColor: "#007AFF",
     marginHorizontal: 16,
     marginVertical: 8,
     borderRadius: 8,
   },
   debugTitle: {
     fontWeight: "bold",
-    marginBottom: 5,
-    color: "#c00000",
+    marginBottom: 10,
+    color: "#007AFF",
+    fontSize: 16,
+    textAlign: "center",
+  },
+  debugSectionTitle: {
+    fontWeight: "bold",
+    marginTop: 8,
+    marginBottom: 4,
+    color: "#333",
+    fontSize: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#ddd",
+    paddingBottom: 2,
+  },
+  debugSubTitle: {
+    fontWeight: "600",
+    marginTop: 4,
+    color: "#555",
+    fontSize: 12,
   },
   debugText: {
     color: "#333",
-    fontSize: 12,
-    marginBottom: 3,
+    fontSize: 11,
+    marginBottom: 2,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  debugError: {
+    color: "#dc3545",
+    fontSize: 11,
+    marginBottom: 2,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontWeight: "bold",
+  },
+  debugSuccess: {
+    color: "#28a745",
+    fontSize: 11,
+    marginBottom: 2,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  imageInfoContainer: {
+    backgroundColor: "#fff",
+    padding: 8,
+    borderRadius: 4,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+  },
+  debugActionsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 8,
   },
   debugButton: {
-    backgroundColor: "#c00000",
-    padding: 5,
+    backgroundColor: "#007AFF",
+    padding: 6,
     borderRadius: 4,
-    marginTop: 5,
+    flex: 1,
+    marginHorizontal: 2,
     alignItems: "center",
+  },
+  fullWidthButton: {
+    flex: 0,
+    width: "100%",
+    marginTop: 8,
   },
   debugButtonText: {
     color: "white",
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: "bold",
   },
 })

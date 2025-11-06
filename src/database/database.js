@@ -782,35 +782,58 @@ export const saveOldMeterData = (meterData) => {
     try {
       const database = await getDatabase()
 
-      database.transaction((tx) => {
-        tx.executeSql(
-          `INSERT INTO old_meter_data 
-           (account_id, serial_no_old, mfd_year_old, final_reading, meter_make_old, category, image_1_old, image_2_old, created_by, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            meterData.account_id,
-            meterData.serial_no_old,
-            meterData.mfd_year_old,
-            meterData.final_reading,
-            meterData.meter_make_old,
-            meterData.category,
-            meterData.image_1_old,
-            meterData.image_2_old,
-            meterData.created_by,
-            Date.now(),
-          ],
-          (_, result) => {
-            console.log("Old meter data saved successfully")
-            resolve(result.insertId)
-          },
-          (_, error) => {
-            console.error("Error saving old meter data", error)
-            reject(error)
-          },
-        )
-      })
+      if (!meterData) {
+        console.error("Meter data is null or undefined")
+        reject(new Error("Meter data is required"))
+        return
+      }
+
+      if (!meterData.account_id) {
+        console.error("Account ID is missing from meter data")
+        reject(new Error("Account ID is required"))
+        return
+      }
+
+      database.transaction(
+        (tx) => {
+          tx.executeSql(
+            `INSERT INTO old_meter_data 
+             (account_id, serial_no_old, mfd_year_old, final_reading, meter_make_old, category, image_1_old, image_2_old, created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              meterData.account_id,
+              meterData.serial_no_old || "",
+              meterData.mfd_year_old || "",
+              meterData.final_reading || "",
+              meterData.meter_make_old || "",
+              meterData.category || "",
+              meterData.image_1_old || null,
+              meterData.image_2_old || null,
+              meterData.created_by || "system",
+              Date.now(),
+            ],
+            (_, result) => {
+              console.log("[v0] Old meter data saved successfully with insertId:", result.insertId)
+              resolve(result.insertId)
+            },
+            (_, error) => {
+              console.error("[v0] SQLite error saving old meter data:", error)
+              console.error("[v0] Error code:", error.code)
+              console.error("[v0] Error message:", error.message)
+              reject(new Error(`Failed to save old meter data: ${error.message}`))
+            },
+          )
+        },
+        (txError) => {
+          console.error("[v0] Transaction error saving old meter data:", txError)
+          reject(new Error(`Transaction failed: ${txError.message}`))
+        },
+        () => {
+          console.log("[v0] Old meter save transaction completed")
+        },
+      )
     } catch (error) {
-      console.error("Error in saveOldMeterData:", error)
+      console.error("[v0] Exception in saveOldMeterData:", error)
       reject(error)
     }
   })

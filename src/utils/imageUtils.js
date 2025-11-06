@@ -113,3 +113,85 @@ export const processImage = async (photo) => {
     throw error
   }
 }
+
+export const validateImageFromDatabase = async (imageUrl) => {
+  if (!imageUrl) {
+    return { valid: false, error: "Image URL is empty", compressedUri: null }
+  }
+
+  try {
+    // Check if it's a URL or a file path
+    if (imageUrl.startsWith("http")) {
+      // It's a URL - fetch and check size
+      const response = await fetch(imageUrl, { method: "HEAD" })
+
+      if (!response.ok) {
+        return { valid: false, error: "Failed to fetch image from server", compressedUri: null }
+      }
+
+      // Check file size from headers
+      const contentLength = response.headers.get("content-length")
+      let needsCompression = false
+
+      if (contentLength) {
+        const sizeInMB = Number.parseInt(contentLength, 10) / (1024 * 1024)
+        if (sizeInMB > 2) {
+          needsCompression = true
+          console.log(`[v0] Image exceeds 2MB (${sizeInMB.toFixed(2)}MB), will compress`)
+        }
+      }
+
+      // Check content type
+      const contentType = response.headers.get("content-type")
+      if (contentType && !contentType.includes("image/jpeg")) {
+        return {
+          valid: false,
+          error: "Image format must be JPG/JPEG",
+          compressedUri: null,
+        }
+      }
+
+      return { valid: true, error: null, compressedUri: imageUrl, needsCompression }
+    } else if (imageUrl.startsWith("file://") || !imageUrl.startsWith("http")) {
+      // It's a local file path - check using file system
+      const fileStats = await RNFS.stat(imageUrl)
+      const sizeInMB = fileStats.size / (1024 * 1024)
+      let needsCompression = false
+      let compressedUri = imageUrl
+
+      if (sizeInMB > 2) {
+        needsCompression = true
+        console.log(`[v0] Image exceeds 2MB (${sizeInMB.toFixed(2)}MB), compressing now...`)
+
+        try {
+          compressedUri = await compressImage(imageUrl, 2000)
+          console.log(`[v0] Image compressed successfully`)
+        } catch (compressionError) {
+          console.error("[v0] Compression failed:", compressionError)
+          return {
+            valid: false,
+            error: `Failed to compress image: ${compressionError.message}`,
+            compressedUri: null,
+          }
+        }
+      }
+
+      // Check if it's JPG by file extension or MIME type
+      const fileExtension = imageUrl.split(".").pop().toLowerCase()
+      if (!["jpg", "jpeg"].includes(fileExtension)) {
+        return {
+          valid: false,
+          error: "Image format must be JPG/JPEG",
+          compressedUri: null,
+        }
+      }
+
+      return { valid: true, error: null, compressedUri, needsCompression }
+    }
+
+    return { valid: false, error: "Invalid image URL format", compressedUri: null }
+  } catch (error) {
+    console.error("Error validating image from database:", error)
+    return { valid: false, error: `Validation error: ${error.message}`, compressedUri: null }
+  }
+}

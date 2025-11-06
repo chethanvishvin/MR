@@ -46,95 +46,15 @@ const createDatabase = () => {
 
 const db = createDatabase()
 
-// Add this function to prevent duplicate old meter data saves
-export const checkExistingOldMeterData = async (accountId) => {
-  console.log(`Checking for existing old meter data for account: ${accountId}`)
-  return new Promise(async (resolve, reject) => {
-    try {
-      const database = await getMainDatabase()
-
-      database.transaction(
-        (tx) => {
-          tx.executeSql(
-            "SELECT COUNT(*) as count FROM old_meter_data WHERE account_id = ? AND is_uploaded = 0",
-            [accountId],
-            (_, { rows }) => {
-              try {
-                const count = rows.item(0).count
-                console.log(`Found ${count} existing old meter records for account: ${accountId}`)
-                resolve(count > 0)
-              } catch (error) {
-                console.error("Error processing existing old meter data count:", error)
-                resolve(false)
-              }
-            },
-            (_, error) => {
-              console.error("Error checking existing old meter data:", error)
-              resolve(false)
-            },
-          )
-        },
-        (transactionError) => {
-          console.error("Transaction error checking existing old meter data:", transactionError)
-          resolve(false)
-        },
-      )
-    } catch (error) {
-      console.error("Exception checking existing old meter data:", error)
-      resolve(false)
-    }
-  })
-}
-
-// Add this function to prevent duplicate new meter data saves
-export const checkExistingNewMeterData = async (accountId) => {
-  console.log(`Checking for existing new meter data for account: ${accountId}`)
-  return new Promise(async (resolve, reject) => {
-    try {
-      const database = await getMainDatabase()
-
-      database.transaction(
-        (tx) => {
-          tx.executeSql(
-            "SELECT COUNT(*) as count FROM new_meter_data WHERE account_id = ? AND is_uploaded = 0",
-            [accountId],
-            (_, { rows }) => {
-              try {
-                const count = rows.item(0).count
-                console.log(`Found ${count} existing new meter records for account: ${accountId}`)
-                resolve(count > 0)
-              } catch (error) {
-                console.error("Error processing existing new meter data count:", error)
-                resolve(false)
-              }
-            },
-            (_, error) => {
-              console.error("Error checking existing new meter data:", error)
-              resolve(false)
-            },
-          )
-        },
-        (transactionError) => {
-          console.error("Transaction error checking existing new meter data:", transactionError)
-          resolve(false)
-        },
-      )
-    } catch (error) {
-      console.error("Exception checking existing new meter data:", error)
-      resolve(false)
-    }
-  })
-}
-
 // Enhanced saveOldMeterData function with duplicate checking
 export const saveOldMeterData = async (data) => {
   console.log("Attempting to save old meter data:", JSON.stringify(data, null, 2))
 
-  // Check if we already have pending data for this account
-  const hasExisting = await checkExistingOldMeterData(data.account_id)
-  if (hasExisting) {
-    console.log(`Duplicate old meter data detected for account ${data.account_id} - skipping save`)
-    return null // Return null to indicate no save was performed
+  // The database allows multiple entries per account, sync process handles duplicates
+  // Only skip save if data is completely empty
+  if (!data || !data.account_id) {
+    console.log("Invalid data or missing account_id - skipping save")
+    return null
   }
 
   return saveOldMeterToMain(data)
@@ -144,11 +64,11 @@ export const saveOldMeterData = async (data) => {
 export const saveNewMeterData = async (data) => {
   console.log("Attempting to save new meter data:", JSON.stringify(data, null, 2))
 
-  // Check if we already have pending data for this account
-  const hasExisting = await checkExistingNewMeterData(data.account_id)
-  if (hasExisting) {
-    console.log(`Duplicate new meter data detected for account ${data.account_id} - skipping save`)
-    return null // Return null to indicate no save was performed
+  // The database allows multiple entries per account, sync process handles duplicates
+  // Only skip save if data is completely empty
+  if (!data || !data.account_id) {
+    console.log("Invalid data or missing account_id - skipping save")
+    return null
   }
 
   return saveNewMeterToMain(data)
@@ -983,8 +903,8 @@ export const deleteFailedUpload = (id, isOldMeter) => {
             },
           )
         },
-        (error) => {
-          console.error(`Transaction error deleting failed upload with ID: ${id}:`, error)
+        (transactionError) => {
+          console.error(`Transaction error deleting failed upload with ID: ${id}:`, transactionError)
           resolve(false)
         },
       )
@@ -1059,8 +979,8 @@ export const updateFailedUpload = (id, isOldMeter, data) => {
             )
           }
         },
-        (error) => {
-          console.error(`Transaction error updating failed upload with ID: ${id}:`, error)
+        (transactionError) => {
+          console.error(`Transaction error updating failed upload with ID: ${id}:`, transactionError)
           resolve(false)
         },
       )
@@ -1273,6 +1193,4 @@ export default {
   getFailedUploads,
   deleteFailedUpload,
   updateFailedUpload,
-  checkExistingOldMeterData,
-  checkExistingNewMeterData,
 }

@@ -166,7 +166,7 @@ const createFileObject = async (uri, fieldName) => {
 }
 
 // Helper function to add delay
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // Create server instance before uploading data with retry mechanism
 export const createServerInstance = async (accountId, retryCount = 0) => {
@@ -174,7 +174,7 @@ export const createServerInstance = async (accountId, retryCount = 0) => {
   const retryDelay = 2000 // 2 seconds
 
   console.log(`Creating server instance for account ID: ${accountId} (attempt ${retryCount + 1}/${maxRetries + 1})`)
-  
+
   try {
     // Validate account ID
     if (!accountId || accountId.toString().trim() === "") {
@@ -222,14 +222,14 @@ export const createServerInstance = async (accountId, retryCount = 0) => {
         console.log(`Server instance API response text: ${responseText}`)
       } catch (textError) {
         console.error("Could not read response text:", textError)
-        
+
         // Retry on read error
         if (retryCount < maxRetries) {
           console.log(`Retrying server instance creation after read error...`)
           await delay(retryDelay)
           return createServerInstance(accountId, retryCount + 1)
         }
-        
+
         return {
           success: false,
           error: "Could not read server response",
@@ -266,7 +266,9 @@ export const createServerInstance = async (accountId, retryCount = 0) => {
 
       // Handle 500 errors with retry
       if (response.status === 500 && retryCount < maxRetries) {
-        console.log(`Server returned 500 error, retrying in ${retryDelay}ms... (attempt ${retryCount + 1}/${maxRetries})`)
+        console.log(
+          `Server returned 500 error, retrying in ${retryDelay}ms... (attempt ${retryCount + 1}/${maxRetries})`,
+        )
         await delay(retryDelay)
         return createServerInstance(accountId, retryCount + 1)
       }
@@ -313,13 +315,13 @@ export const createServerInstance = async (accountId, retryCount = 0) => {
       // Handle timeout with retry
       if (fetchError.name === "AbortError") {
         console.error("Server instance request timed out")
-        
+
         if (retryCount < maxRetries) {
           console.log(`Retrying server instance creation after timeout...`)
           await delay(retryDelay)
           return createServerInstance(accountId, retryCount + 1)
         }
-        
+
         return {
           success: false,
           error: "Request timed out after multiple attempts. Please check your internet connection and try again.",
@@ -329,13 +331,13 @@ export const createServerInstance = async (accountId, retryCount = 0) => {
 
       // Handle other fetch errors with retry
       console.error("Fetch error in createServerInstance:", fetchError)
-      
+
       if (retryCount < maxRetries) {
         console.log(`Retrying server instance creation after fetch error...`)
         await delay(retryDelay)
         return createServerInstance(accountId, retryCount + 1)
       }
-      
+
       return {
         success: false,
         error: `Network error: ${fetchError.message}`,
@@ -484,7 +486,7 @@ export const uploadOldMeterData = async (data, retryCount = 0) => {
   const retryDelay = 3000 // 3 seconds
 
   console.log(`Starting upload of old meter data to API (attempt ${retryCount + 1}/${maxRetries + 1})...`)
-  
+
   try {
     // First check if we have internet connectivity
     const isConnected = await checkInternetConnection()
@@ -496,14 +498,67 @@ export const uploadOldMeterData = async (data, retryCount = 0) => {
       }
     }
 
-    // CRITICAL: Check if account_id is missing
-    if (!data.account_id) {
-      console.error("ERROR: account_id is missing in the data")
+    let accountIdValue = null
+
+    if (data instanceof FormData) {
+      console.log("[v0] Data is FormData, extracting account_id...")
+
+      // Method 1: Try _parts (React Native)
+      if (data._parts && Array.isArray(data._parts)) {
+        for (const part of data._parts) {
+          if (part[0] === "account_id") {
+            accountIdValue = part[1]
+            console.log("[v0] Found account_id in _parts:", accountIdValue)
+            break
+          }
+        }
+      }
+
+      // Method 2: Try to get via forEach (Web/some React Native versions)
+      if (!accountIdValue && typeof data.forEach === "function") {
+        data.forEach((value, key) => {
+          if (key === "account_id") {
+            accountIdValue = value
+            console.log("[v0] Found account_id via forEach:", accountIdValue)
+          }
+        })
+      }
+
+      // Method 3: Try entries (Web standard)
+      if (!accountIdValue && typeof data.entries === "function") {
+        try {
+          for (const [key, value] of data.entries()) {
+            if (key === "account_id") {
+              accountIdValue = value
+              console.log("[v0] Found account_id via entries:", accountIdValue)
+              break
+            }
+          }
+        } catch (e) {
+          console.warn("[v0] Could not use entries() method:", e)
+        }
+      }
+    } else {
+      // Check plain object for account_id
+      accountIdValue = data.account_id
+      console.log("[v0] Data is plain object, account_id:", accountIdValue)
+    }
+
+    if (!accountIdValue) {
+      console.error("[v0] ERROR: account_id is missing in the data")
+      console.error("[v0] Data type:", data instanceof FormData ? "FormData" : "Object")
+      console.error("[v0] Data keys/parts:", data instanceof FormData ? data._parts : Object.keys(data))
       return {
         success: false,
         error: "Missing account_id - this field is required",
+        debug: {
+          isFormData: data instanceof FormData,
+          hasParts: data instanceof FormData && !!data._parts,
+        },
       }
     }
+
+    console.log("[v0] account_id validation passed:", accountIdValue)
 
     // Get auth token
     const token = await getAuthToken()
@@ -599,20 +654,20 @@ export const uploadOldMeterData = async (data, retryCount = 0) => {
     }
 
     // FINAL CHECK: Verify account_id is in the FormData and not undefined
-    let accountIdValue = null
-    let categoryValue = null
+    let accountIdValueFinal = null
+    let categoryValueFinal = null
     if (formData._parts) {
       for (const part of formData._parts) {
         if (part[0] === "account_id") {
-          accountIdValue = part[1]
+          accountIdValueFinal = part[1]
         }
         if (part[0] === "category") {
-          categoryValue = part[1]
+          categoryValueFinal = part[1]
         }
       }
     }
 
-    if (!accountIdValue) {
+    if (!accountIdValueFinal) {
       console.error("CRITICAL ERROR: account_id is still missing or undefined in the final FormData!")
       return {
         success: false,
@@ -620,7 +675,7 @@ export const uploadOldMeterData = async (data, retryCount = 0) => {
       }
     }
 
-    if (!categoryValue) {
+    if (!categoryValueFinal) {
       console.error("CRITICAL ERROR: category is missing or undefined in the final FormData!")
       return {
         success: false,
@@ -628,8 +683,8 @@ export const uploadOldMeterData = async (data, retryCount = 0) => {
       }
     }
 
-    console.log("FINAL CHECK - account_id is set to:", accountIdValue)
-    console.log("FINAL CHECK - category is set to:", categoryValue)
+    console.log("FINAL CHECK - account_id is set to:", accountIdValueFinal)
+    console.log("FINAL CHECK - category is set to:", categoryValueFinal)
 
     // Set up headers - IMPORTANT: Don't set Content-Type for multipart/form-data
     const headers = {
@@ -764,13 +819,13 @@ export const uploadOldMeterData = async (data, retryCount = 0) => {
     })
   } catch (error) {
     console.error("Exception in uploadOldMeterData:", error)
-    
+
     if (retryCount < maxRetries) {
       console.log(`Exception occurred, retrying old meter upload in ${retryDelay}ms...`)
       await delay(retryDelay)
       return uploadOldMeterData(data, retryCount + 1)
     }
-    
+
     return { success: false, error: error.message || "Unknown error" }
   }
 }
@@ -781,7 +836,7 @@ export const uploadNewMeterData = async (data, retryCount = 0) => {
   const retryDelay = 3000 // 3 seconds
 
   console.log(`Starting upload of new meter data to API (attempt ${retryCount + 1}/${maxRetries + 1})...`)
-  
+
   try {
     // First check if we have internet connectivity
     const isConnected = await checkInternetConnection()
@@ -1052,13 +1107,13 @@ export const uploadNewMeterData = async (data, retryCount = 0) => {
     })
   } catch (error) {
     console.error("Exception in uploadNewMeterData:", error)
-    
+
     if (retryCount < maxRetries) {
       console.log(`Exception occurred, retrying new meter upload in ${retryDelay}ms...`)
       await delay(retryDelay)
       return uploadNewMeterData(data, retryCount + 1)
     }
-    
+
     return { success: false, error: error.message || "Unknown error" }
   }
 }
@@ -1213,7 +1268,7 @@ export const uploadPendingData = async () => {
 
       if (!instanceResult.success) {
         console.error(`❌ Failed to create server instance for account ${accountId}:`, instanceResult.error)
-        
+
         // Check if it's an authentication error
         if (instanceResult.isAuthError) {
           console.log("🔐 Authentication error detected, marking all records as auth failures")
@@ -1266,7 +1321,7 @@ export const uploadPendingData = async () => {
       // STEP 2: Upload old meter data for this account and track success/failure
       console.log(`📤 STEP 2: Uploading old meter data for account ${accountId}`)
       const accountOldMeterSuccess = new Set() // Track successful old meter uploads for this account
-      
+
       for (const oldMeterData of group.oldMeter) {
         console.log(`📤 Uploading old meter record ID: ${oldMeterData.id} for account: ${accountId}`)
         try {
@@ -1316,31 +1371,29 @@ export const uploadPendingData = async () => {
       // STEP 3: Upload new meter data for this account ONLY if corresponding old meter was successful
       console.log(`📤 STEP 3: Uploading new meter data for account ${accountId}`)
       console.log(`🔍 Old meter successful uploads for this account: ${accountOldMeterSuccess.size}`)
-      
+
       for (const newMeterData of group.newMeter) {
         console.log(`📤 Processing new meter record ID: ${newMeterData.id} for account: ${accountId}`)
-        
+
         // CRITICAL CHECK: Only upload new meter if there was at least one successful old meter upload for this account
         if (accountOldMeterSuccess.size === 0) {
-          console.log(`⚠️ SKIPPING new meter record ID: ${newMeterData.id} - No successful old meter upload for account ${accountId}`)
+          console.log(
+            `⚠️ SKIPPING new meter record ID: ${newMeterData.id} - No successful old meter upload for account ${accountId}`,
+          )
           skippedNewMeterRecords.push({
             id: newMeterData.id,
             accountId: accountId,
             reason: "No successful old meter upload for this account",
             originalData: newMeterData,
           })
-          
+
           // Mark this new meter record with a specific error indicating it was skipped
-          await markMeterDataWithError(
-            newMeterData.id, 
-            "Skipped: Old meter upload failed for this account", 
-            "new"
-          )
+          await markMeterDataWithError(newMeterData.id, "Skipped: Old meter upload failed for this account", "new")
           continue // Skip this new meter record
         }
 
         console.log(`✅ Proceeding with new meter upload - old meter was successful for account ${accountId}`)
-        
+
         try {
           // Ensure account_id is properly set
           if (!newMeterData.account_id) {
@@ -1469,9 +1522,9 @@ export const uploadPendingData = async () => {
     }
 
     if (oldMeterFailures.length > 0 || newMeterFailures.length > 0) {
-      console.log("❌ Some uploads failed:", { 
-        oldMeterFailures: oldMeterFailures.length, 
-        newMeterFailures: newMeterFailures.length 
+      console.log("❌ Some uploads failed:", {
+        oldMeterFailures: oldMeterFailures.length,
+        newMeterFailures: newMeterFailures.length,
       })
     }
 
